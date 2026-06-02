@@ -43,7 +43,7 @@ namespace WeiboAlbumDownloader
         /// </summary>
         private WeiboDataSource dataSource = WeiboDataSource.WeiboCnMobile;
         private int countPerPage = 90;
-        private string downloadFolder = Path.Combine(AppContext.BaseDirectory, "Download");
+        private string downloadFolder = Path.Combine(AppContext.BaseDirectory, "Download\\");
         private SettingsModel? settings;
         private string? cookie;
         private List<string> uids = new List<string>();
