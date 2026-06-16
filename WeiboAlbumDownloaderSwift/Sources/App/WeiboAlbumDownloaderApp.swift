@@ -3,7 +3,6 @@ import AppKit
 
 // MARK: - 应用入口
 
-/// SPM 可执行文件需要显式注册为 GUI 应用，否则从终端启动时不会显示窗口
 class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -35,10 +34,8 @@ struct WeiboAlbumDownloaderApp: App {
         .windowStyle(.titleBar)
         .defaultSize(width: 900, height: 600)
         .commands {
-            // 移除默认的"新建窗口"菜单项（单窗口应用不需要）
             CommandGroup(replacing: .newItem) {}
 
-            // 自定义"下载"菜单
             CommandMenu("下载") {
                 Button("开始/停止下载") {
                     downloadVM.toggleDownload()

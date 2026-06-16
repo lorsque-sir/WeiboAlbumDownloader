@@ -8,15 +8,22 @@ struct DownloadProgress: Sendable {
     var skipped: Int = 0
     var failed: Int = 0
     var currentPage: Int = 0
+    var batchCurrentIndex: Int = 0
+    var batchTotalCount: Int = 0
 
     var total: Int { completed + skipped + failed }
 
+    var isBatchMode: Bool { batchTotalCount > 0 }
+
     var summaryText: String {
-        "完成 \(completed) | 跳过 \(skipped) | 失败 \(failed)"
+        var text = "完成 \(completed) | 跳过 \(skipped) | 失败 \(failed)"
+        if isBatchMode {
+            text += " | 用户 \(batchCurrentIndex)/\(batchTotalCount)"
+        }
+        return text
     }
 }
 
-/// 下载失败的文件记录
 struct FailedItem: Identifiable, Sendable {
     let id = UUID()
     let url: URL
@@ -35,13 +42,18 @@ final class DownloadViewModel: ObservableObject {
     @Published var showSettings = false
     @Published var progress = DownloadProgress()
     @Published var failedItems: [FailedItem] = []
+    @Published var logFilterLevel: LogLevel?
 
-    /// 当前下载任务句柄（用于取消操作）
     private var downloadTask: Task<Void, Never>?
-    private var settings = AppSettings.load()
     private var cronScheduler: CronScheduler?
-
     private var settingsObserver: Any?
+
+    private var pendingEvents: [DownloadCoordinator.DownloadEvent] = []
+    private var batchFlushTask: Task<Void, Never>?
+
+    private var settings: AppSettings {
+        AppSettingsManager.shared.current
+    }
 
     init() {
         configureCronScheduler()
@@ -49,15 +61,15 @@ final class DownloadViewModel: ObservableObject {
             forName: .settingsDidChange, object: nil, queue: .main
         ) { [weak self] _ in
             Task { @MainActor in
+                AppSettingsManager.shared.reload()
                 self?.configureCronScheduler()
             }
         }
     }
 
-    /// 根据当前设置启动或停止 Cron 定时任务
-    func configureCronScheduler() {
-        settings = AppSettings.load()
+    // MARK: - Cron 调度
 
+    func configureCronScheduler() {
         let oldScheduler = cronScheduler
         cronScheduler = nil
 
@@ -85,8 +97,8 @@ final class DownloadViewModel: ObservableObject {
         appendLog("Cron 定时任务已启动: \(expression)", level: .info)
     }
 
-    /// 从 uidList.txt 文件读取批量下载的 UID 列表
-    /// 文件格式：每行一个用户，支持 `UID,昵称` 格式，// 开头为注释
+    // MARK: - UID 列表读取
+
     var uidList: [String] {
         let url = AppSettings.settingsURL
             .deletingLastPathComponent()
@@ -99,7 +111,8 @@ final class DownloadViewModel: ObservableObject {
             .map { $0.components(separatedBy: ",").first ?? $0 }
     }
 
-    /// 切换下载/停止状态
+    // MARK: - 下载控制
+
     func toggleDownload() {
         if isDownloading {
             stopDownload()
@@ -108,14 +121,12 @@ final class DownloadViewModel: ObservableObject {
         }
     }
 
-    /// 开始单用户下载
     func startDownload() {
         guard !uid.trimmingCharacters(in: .whitespaces).isEmpty else {
             appendLog("请输入微博 UID", level: .warning)
             return
         }
 
-        // 从输入中提取纯数字 UID（支持用户粘贴带前缀的 URL 等格式）
         let targetUID = uid.trimmingCharacters(in: .whitespaces)
             .components(separatedBy: CharacterSet.decimalDigits.inverted)
             .filter { !$0.isEmpty }
@@ -125,41 +136,37 @@ final class DownloadViewModel: ObservableObject {
             appendLog("没有找到有效的微博 UID", level: .warning)
             return
         }
+
         isDownloading = true
         userInfo = nil
         progress = DownloadProgress()
         failedItems = []
-        settings = AppSettings.load()
 
+        let currentSettings = settings
         downloadTask = Task {
             do {
-                let coordinator = DownloadCoordinator(settings: settings)
+                let coordinator = DownloadCoordinator(settings: currentSettings)
                 try await coordinator.downloadUser(
                     uid: targetUID,
                     log: { [weak self] text, level in
-                        Task { @MainActor in
-                            self?.appendLog(text, level: level)
-                        }
+                        Task { @MainActor in self?.appendLog(text, level: level) }
                     },
                     onUserInfo: { [weak self] user in
-                        Task { @MainActor in
-                            self?.userInfo = user
-                        }
+                        Task { @MainActor in self?.userInfo = user }
                     },
                     onProgress: { [weak self] event in
-                        Task { @MainActor in
-                            self?.handleProgressEvent(event)
-                        }
+                        Task { @MainActor in self?.enqueueProgressEvent(event) }
                     }
                 )
+                flushPendingEvents()
                 let p = progress
                 appendLog("下载完成 — 成功 \(p.completed) / 跳过 \(p.skipped) / 失败 \(p.failed)", level: .success)
 
-                if let token = settings.pushPlusToken, !token.isEmpty {
-                    let info = "\(userInfo?.screenName ?? targetUID) 下载完成：成功 \(p.completed) / 跳过 \(p.skipped) / 失败 \(p.failed)"
-                    await PushPlusService.sendMessage(token: token, title: "微博相册下载", content: info)
-                }
-
+                await sendPushNotification(
+                    settings: currentSettings,
+                    title: "微博相册下载",
+                    content: "\(userInfo?.screenName ?? targetUID) 下载完成：成功 \(p.completed) / 跳过 \(p.skipped) / 失败 \(p.failed)"
+                )
                 addToUidList(uid: targetUID, nickname: userInfo?.screenName)
             } catch is CancellationError {
                 appendLog("下载已取消", level: .info)
@@ -172,7 +179,6 @@ final class DownloadViewModel: ObservableObject {
         }
     }
 
-    /// 停止当前下载（通过取消 Task 实现协作式取消）
     func stopDownload() {
         downloadTask?.cancel()
         downloadTask = nil
@@ -180,29 +186,29 @@ final class DownloadViewModel: ObservableObject {
         appendLog("正在停止下载...", level: .info)
     }
 
-    /// 批量下载 uidList.txt 中的所有用户
-    /// 用户之间间隔 60 秒，避免触发微博反爬
     func batchDownload() {
         let uids = uidList
         guard !uids.isEmpty else {
-            appendLog("UID 列表为空，请先配置 uidList.txt", level: .warning)
+            appendLog("UID 列表为空，请在设置中添加用户", level: .warning)
             return
         }
 
         isDownloading = true
         progress = DownloadProgress()
+        progress.batchTotalCount = uids.count
         failedItems = []
-        settings = AppSettings.load()
         appendLog("开始批量下载 \(uids.count) 个用户", level: .info)
 
+        let currentSettings = settings
         downloadTask = Task {
             for (index, batchUID) in uids.enumerated() {
                 if Task.isCancelled { break }
 
+                progress.batchCurrentIndex = index + 1
                 appendLog("[\(index + 1)/\(uids.count)] 开始下载 \(batchUID)", level: .info)
 
                 do {
-                    let coordinator = DownloadCoordinator(settings: settings)
+                    let coordinator = DownloadCoordinator(settings: currentSettings)
                     try await coordinator.downloadUser(
                         uid: batchUID,
                         log: { [weak self] text, level in
@@ -212,7 +218,7 @@ final class DownloadViewModel: ObservableObject {
                             Task { @MainActor in self?.userInfo = user }
                         },
                         onProgress: { [weak self] event in
-                            Task { @MainActor in self?.handleProgressEvent(event) }
+                            Task { @MainActor in self?.enqueueProgressEvent(event) }
                         }
                     )
                 } catch is CancellationError {
@@ -227,13 +233,15 @@ final class DownloadViewModel: ObservableObject {
                 }
             }
 
+            flushPendingEvents()
             let p = progress
             appendLog("批量下载完成 — 成功 \(p.completed) / 跳过 \(p.skipped) / 失败 \(p.failed)", level: .success)
 
-            if let token = settings.pushPlusToken, !token.isEmpty {
-                let info = "批量下载 \(uids.count) 个用户完成：成功 \(p.completed) / 跳过 \(p.skipped) / 失败 \(p.failed)"
-                await PushPlusService.sendMessage(token: token, title: "微博相册批量下载", content: info)
-            }
+            await sendPushNotification(
+                settings: currentSettings,
+                title: "微博相册批量下载",
+                content: "批量下载 \(uids.count) 个用户完成：成功 \(p.completed) / 跳过 \(p.skipped) / 失败 \(p.failed)"
+            )
             isDownloading = false
         }
     }
@@ -242,38 +250,91 @@ final class DownloadViewModel: ObservableObject {
         messages.removeAll()
     }
 
-    /// 在 Finder 中打开下载目录
+    func retryFailedItems() {
+        let items = failedItems
+        guard !items.isEmpty else { return }
+        failedItems.removeAll()
+
+        isDownloading = true
+        appendLog("开始重试 \(items.count) 个失败文件", level: .info)
+
+        downloadTask = Task {
+            let httpClient = HTTPClient.shared
+
+            for item in items {
+                if Task.isCancelled { break }
+
+                do {
+                    let destination = AppSettings.defaultDownloadDirectory
+                        .appendingPathComponent(item.fileName)
+                    try await httpClient.downloadFile(item.url, to: destination)
+                    appendLog("重试成功: \(item.fileName)", level: .success)
+                    progress.completed += 1
+                } catch {
+                    appendLog("重试失败: \(item.fileName) - \(error.localizedDescription)", level: .error)
+                    progress.failed += 1
+                    failedItems.append(FailedItem(
+                        url: item.url,
+                        fileName: item.fileName,
+                        errorDescription: error.localizedDescription
+                    ))
+                }
+            }
+
+            appendLog("重试完成", level: .success)
+            isDownloading = false
+        }
+    }
+
     func openDownloadFolder() {
-        let url = AppSettings.defaultDownloadDirectory
-        NSWorkspace.shared.open(url)
+        NSWorkspace.shared.open(AppSettings.defaultDownloadDirectory)
     }
 
     // MARK: - 私有方法
 
-    private func handleProgressEvent(_ event: DownloadCoordinator.DownloadEvent) {
-        switch event {
-        case .completed:
-            progress.completed += 1
-        case .skipped:
-            progress.skipped += 1
-        case .failed(let url, let fileName, let error):
-            progress.failed += 1
-            failedItems.append(FailedItem(url: url, fileName: fileName, errorDescription: error))
-        case .pageLoaded(let page):
-            progress.currentPage = page
+    private func enqueueProgressEvent(_ event: DownloadCoordinator.DownloadEvent) {
+        pendingEvents.append(event)
+        if batchFlushTask == nil {
+            batchFlushTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(100))
+                self?.flushPendingEvents()
+            }
         }
     }
 
-    /// 添加日志消息（头部插入，最新在前），限制最多 500 条
+    private func flushPendingEvents() {
+        let events = pendingEvents
+        pendingEvents.removeAll()
+        batchFlushTask = nil
+
+        for event in events {
+            switch event {
+            case .completed:
+                progress.completed += 1
+            case .skipped:
+                progress.skipped += 1
+            case .failed(let url, let fileName, let error):
+                progress.failed += 1
+                failedItems.append(FailedItem(url: url, fileName: fileName, errorDescription: error))
+            case .pageLoaded(let page):
+                progress.currentPage = page
+            }
+        }
+    }
+
     private func appendLog(_ text: String, level: LogLevel = .info) {
         let msg = LogMessage(text, level: level)
-        messages.insert(msg, at: 0)
+        messages.append(msg)
         if messages.count > 500 {
-            messages.removeLast(messages.count - 500)
+            messages.removeFirst(messages.count - 500)
         }
     }
 
-    /// 将已下载的 UID 追加到 uidList.txt（去重，方便下次批量下载）
+    private func sendPushNotification(settings: AppSettings, title: String, content: String) async {
+        guard let token = settings.pushPlusToken, !token.isEmpty else { return }
+        await PushPlusService.sendMessage(token: token, title: title, content: content)
+    }
+
     private func addToUidList(uid: String, nickname: String?) {
         let url = AppSettings.settingsURL
             .deletingLastPathComponent()

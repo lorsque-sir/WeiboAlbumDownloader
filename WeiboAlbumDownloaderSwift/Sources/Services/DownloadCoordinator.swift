@@ -264,7 +264,6 @@ actor DownloadCoordinator {
     private func downloadMediaConcurrently(
         items: [MediaItem], post: WeiboPost, directory: URL
     ) async -> [DownloadService.DownloadResult] {
-        // 根据用户设置过滤不需要的媒体类型
         let filtered = items.filter { item in
             switch item.type {
             case .video:     return settings.enableDownloadVideo
@@ -273,16 +272,17 @@ actor DownloadCoordinator {
             }
         }
 
-        // WeiboCom2 数据源无发布时间，跳过时间戳设置
         let setTimestamp = settings.dataSource != .weiboCom2
+        let shortenName = settings.enableShortenName
+        let maxConcurrent = settings.maxConcurrentDownloads
+        let svc = downloadService
 
         return await withTaskGroup(of: DownloadService.DownloadResult.self, returning: [DownloadService.DownloadResult].self) { group in
             var results: [DownloadService.DownloadResult] = []
             var running = 0
 
             for item in filtered {
-                // 控制并发数量：达到上限时等待一个任务完成再添加新任务
-                if running >= settings.maxConcurrentDownloads {
+                if running >= maxConcurrent {
                     if let result = await group.next() {
                         results.append(result)
                         running -= 1
@@ -290,9 +290,9 @@ actor DownloadCoordinator {
                 }
 
                 group.addTask {
-                    await self.downloadService.downloadMedia(
+                    await svc.downloadMedia(
                         item: item, post: post, directory: directory,
-                        shortenName: self.settings.enableShortenName,
+                        shortenName: shortenName,
                         setTimestamp: setTimestamp
                     )
                 }

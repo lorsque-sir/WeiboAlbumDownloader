@@ -6,21 +6,43 @@ struct SettingsView: View {
     @StateObject private var viewModel = SettingsViewModel()
     @Environment(\.dismiss) private var dismiss
     @State private var saveError: String?
+    @State private var selectedTab = 0
 
     var body: some View {
         VStack(spacing: 0) {
             headerBar
             Divider()
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    dataSourceSection
-                    cookieSection
-                    downloadOptionsSection
-                    scheduleSection
-                    pushPlusSection
+            TabView(selection: $selectedTab) {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        dataSourceSection
+                        cookieSection
+                    }
+                    .padding(20)
                 }
-                .padding(20)
+                .tabItem { Label("数据源", systemImage: "antenna.radiowaves.left.and.right") }
+                .tag(0)
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        downloadOptionsSection
+                        uidListSection
+                    }
+                    .padding(20)
+                }
+                .tabItem { Label("下载", systemImage: "arrow.down.doc.fill") }
+                .tag(1)
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        scheduleSection
+                        pushPlusSection
+                    }
+                    .padding(20)
+                }
+                .tabItem { Label("自动化", systemImage: "clock.fill") }
+                .tag(2)
             }
         }
     }
@@ -95,6 +117,7 @@ struct SettingsView: View {
             cookieRow(
                 domain: "weibo.cn / m.weibo.cn",
                 isConfigured: viewModel.hasCnCookie,
+                status: viewModel.cnCookieStatus,
                 cookieText: $viewModel.cnCookieText,
                 onScan: { viewModel.showCnCookieSheet = true }
             )
@@ -114,6 +137,7 @@ struct SettingsView: View {
             cookieRow(
                 domain: "weibo.com",
                 isConfigured: viewModel.hasComCookie,
+                status: viewModel.comCookieStatus,
                 cookieText: $viewModel.comCookieText,
                 onScan: { viewModel.showComCookieSheet = true }
             )
@@ -127,12 +151,22 @@ struct SettingsView: View {
                 )
                 .frame(minWidth: 450, minHeight: 550)
             }
+
+            Divider()
+
+            Button {
+                viewModel.checkCookieValidity()
+            } label: {
+                Label("检测 Cookie 有效性", systemImage: "checkmark.shield")
+                    .font(.system(size: 12))
+            }
         }
     }
 
     private func cookieRow(
         domain: String,
         isConfigured: Bool,
+        status: SettingsViewModel.CookieStatus,
         cookieText: Binding<String>,
         onScan: @escaping () -> Void
     ) -> some View {
@@ -143,12 +177,7 @@ struct SettingsView: View {
                         .font(.subheadline.bold())
 
                     HStack(spacing: 4) {
-                        Circle()
-                            .fill(isConfigured ? .green : .red)
-                            .frame(width: 6, height: 6)
-                        Text(isConfigured ? "已配置" : "未配置")
-                            .font(.caption)
-                            .foregroundStyle(isConfigured ? .green : .red)
+                        cookieStatusIndicator(isConfigured: isConfigured, status: status)
                     }
                 }
                 Spacer()
@@ -163,6 +192,38 @@ struct SettingsView: View {
             TextField("或手动粘贴 Cookie", text: cookieText)
                 .textFieldStyle(.roundedBorder)
                 .font(.system(.caption, design: .monospaced))
+        }
+    }
+
+    @ViewBuilder
+    private func cookieStatusIndicator(
+        isConfigured: Bool,
+        status: SettingsViewModel.CookieStatus
+    ) -> some View {
+        switch status {
+        case .checking:
+            ProgressView()
+                .controlSize(.mini)
+            Text("检测中...")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        case .valid:
+            Circle().fill(.green).frame(width: 6, height: 6)
+            Text("有效")
+                .font(.caption)
+                .foregroundStyle(.green)
+        case .invalid(let msg):
+            Circle().fill(.red).frame(width: 6, height: 6)
+            Text(msg)
+                .font(.caption)
+                .foregroundStyle(.red)
+        case .unknown:
+            Circle()
+                .fill(isConfigured ? .green : .red)
+                .frame(width: 6, height: 6)
+            Text(isConfigured ? "已配置" : "未配置")
+                .font(.caption)
+                .foregroundStyle(isConfigured ? .green : .red)
         }
     }
 
@@ -225,6 +286,75 @@ struct SettingsView: View {
                 )
                 .font(.system(size: 13))
                 .padding(.leading, 20)
+            }
+        }
+    }
+
+    // MARK: - UID 列表管理
+
+    private var uidListSection: some View {
+        SettingsSection(title: "批量下载列表", icon: "person.2.fill", iconColor: .indigo) {
+            HStack(spacing: 8) {
+                TextField("输入 UID 或 UID,昵称", text: $viewModel.newUIDText)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 13))
+                    .onSubmit { viewModel.addUID() }
+
+                Button {
+                    viewModel.addUID()
+                } label: {
+                    Image(systemName: "plus.circle.fill")
+                        .font(.system(size: 16))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.blue)
+                .disabled(viewModel.newUIDText.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+
+            if viewModel.uidListEntries.isEmpty {
+                Label("暂无用户，添加后可使用「批量下载」功能", systemImage: "info.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(Array(viewModel.uidListEntries.enumerated()), id: \.element.id) { index, entry in
+                        HStack(spacing: 8) {
+                            Text("\(index + 1)")
+                                .font(.system(size: 10, design: .rounded))
+                                .foregroundStyle(.tertiary)
+                                .frame(width: 20)
+
+                            Text(entry.uid)
+                                .font(.system(size: 12, design: .monospaced))
+                                .textSelection(.enabled)
+
+                            if let nick = entry.nickname, !nick.isEmpty {
+                                Text(nick)
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            Spacer()
+
+                            Button {
+                                viewModel.uidListEntries.remove(at: index)
+                            } label: {
+                                Image(systemName: "minus.circle.fill")
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(.red.opacity(0.6))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .padding(.vertical, 4)
+                        .padding(.horizontal, 8)
+
+                        if index < viewModel.uidListEntries.count - 1 {
+                            Divider().padding(.leading, 28)
+                        }
+                    }
+                }
+                .padding(.vertical, 4)
+                .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 6))
             }
         }
     }

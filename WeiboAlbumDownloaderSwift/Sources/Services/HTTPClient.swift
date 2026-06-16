@@ -3,14 +3,11 @@ import Foundation
 // MARK: - HTTP 网络客户端
 
 /// 基于 URLSession 的 HTTP 客户端单例
-/// 使用 actor 保证线程安全，替代 C# 版每次请求都 new HttpClient 的做法，
-/// 复用底层 TCP 连接池，避免连接泄漏和端口耗尽
-actor HTTPClient {
+/// URLSession 本身线程安全，无需 actor 串行化——直接用 final class 避免请求排队瓶颈
+final class HTTPClient: Sendable {
     static let shared = HTTPClient()
 
-    /// API 请求用的 session（短超时）
     private let apiSession: URLSession
-    /// 文件下载用的 session（长超时，适配大视频）
     private let downloadSession: URLSession
 
     private static let defaultHeaders: [String: String] = [

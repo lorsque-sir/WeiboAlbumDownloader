@@ -4,32 +4,91 @@ import SwiftUI
 
 struct LogListView: View {
     let messages: [LogMessage]
+    @Binding var filterLevel: LogLevel?
 
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
-                ForEach(Array(messages.enumerated()), id: \.element.id) { index, message in
-                    LogRowView(message: message, isEven: index % 2 == 0)
-                        .id(message.id)
+        VStack(spacing: 0) {
+            logFilterBar
+            Divider()
+
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(filteredMessages) { message in
+                        LogRowView(message: message)
+                    }
                 }
             }
-        }
-        .contextMenu {
-            Button {
-                copyAllLogs()
-            } label: {
-                Label("复制全部日志", systemImage: "doc.on.doc")
-            }
-            Button {
-                exportLog()
-            } label: {
-                Label("导出日志...", systemImage: "square.and.arrow.up")
+            .contextMenu {
+                Button {
+                    copyAllLogs()
+                } label: {
+                    Label("复制全部日志", systemImage: "doc.on.doc")
+                }
+                Button {
+                    exportLog()
+                } label: {
+                    Label("导出日志...", systemImage: "square.and.arrow.up")
+                }
             }
         }
     }
 
+    private var filteredMessages: [LogMessage] {
+        guard let level = filterLevel else { return messages }
+        return messages.filter { $0.level == level }
+    }
+
+    // MARK: - 过滤栏
+
+    private var logFilterBar: some View {
+        HStack(spacing: 4) {
+            Text("日志")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
+
+            Spacer()
+
+            filterButton(level: nil, label: "全部", icon: "list.bullet")
+            filterButton(level: .error, label: "错误", icon: "xmark.circle.fill")
+            filterButton(level: .warning, label: "警告", icon: "exclamationmark.triangle.fill")
+            filterButton(level: .success, label: "成功", icon: "checkmark.circle.fill")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 4)
+        .background(.bar)
+    }
+
+    private func filterButton(level: LogLevel?, label: String, icon: String) -> some View {
+        let isActive = filterLevel == level
+        let count: Int
+        if let level {
+            count = messages.filter { $0.level == level }.count
+        } else {
+            count = messages.count
+        }
+
+        return Button {
+            filterLevel = level
+        } label: {
+            HStack(spacing: 3) {
+                Image(systemName: icon)
+                    .font(.system(size: 9))
+                if count > 0 {
+                    Text("\(count)")
+                        .font(.system(size: 10, design: .rounded))
+                }
+            }
+            .foregroundStyle(isActive ? .white : .secondary)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(isActive ? Color.accentColor : Color.clear, in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .help(label)
+    }
+
     private func copyAllLogs() {
-        let text = messages.reversed().map { "[\($0.timeString)] \($0.text)" }.joined(separator: "\n")
+        let text = messages.map { "[\($0.timeString)] \($0.text)" }.joined(separator: "\n")
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
     }
@@ -40,7 +99,7 @@ struct LogListView: View {
         panel.nameFieldStringValue = "weibo-download-log.txt"
 
         if panel.runModal() == .OK, let url = panel.url {
-            let text = messages.reversed().map { "[\($0.timeString)] [\($0.level.rawValue)] \($0.text)" }.joined(separator: "\n")
+            let text = messages.map { "[\($0.timeString)] [\($0.level.rawValue)] \($0.text)" }.joined(separator: "\n")
             try? text.write(to: url, atomically: true, encoding: .utf8)
         }
     }
@@ -50,7 +109,6 @@ struct LogListView: View {
 
 private struct LogRowView: View {
     let message: LogMessage
-    let isEven: Bool
     @State private var isHovered = false
 
     var body: some View {
@@ -71,7 +129,7 @@ private struct LogRowView: View {
         .padding(.vertical, 4)
         .padding(.horizontal, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(rowBackground)
+        .background(isHovered ? Color.accentColor.opacity(0.06) : Color.clear)
         .onHover { isHovered = $0 }
     }
 
@@ -94,17 +152,5 @@ private struct LogRowView: View {
         }
         .font(.system(size: 11))
         .frame(width: 14)
-    }
-
-    private var rowBackground: some View {
-        Group {
-            if isHovered {
-                Color.accentColor.opacity(0.06)
-            } else if isEven {
-                Color(nsColor: .alternatingContentBackgroundColors[1]).opacity(0.5)
-            } else {
-                Color.clear
-            }
-        }
     }
 }

@@ -1,9 +1,30 @@
 import Foundation
 
+// MARK: - 应用配置管理器
+
+/// 配置单例，避免每次下载都从磁盘读取。
+/// 通过 NotificationCenter `.settingsDidChange` 保持同步。
+@MainActor
+final class AppSettingsManager: ObservableObject {
+    static let shared = AppSettingsManager()
+    @Published private(set) var current: AppSettings
+
+    private init() {
+        self.current = AppSettings.load()
+    }
+
+    func reload() {
+        current = AppSettings.load()
+    }
+
+    func update(_ transform: (inout AppSettings) -> Void) {
+        transform(&current)
+        try? current.save()
+    }
+}
+
 // MARK: - 应用配置模型
 
-/// 应用全局配置，持久化存储到 ~/Library/Application Support/WeiboAlbumDownloader/Settings.json
-/// 所有字段均为 Codable，支持 JSON 序列化/反序列化
 struct AppSettings: Codable {
     /// 当前使用的数据源
     var dataSource: WeiboDataSource = .weiboCnMobile

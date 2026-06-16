@@ -3,8 +3,8 @@ import Foundation
 // MARK: - 媒体文件下载服务
 
 /// 负责单个媒体文件的下载操作，包含跳过已存在文件、设置时间戳等逻辑
-/// 使用 actor 保证并发下载时的线程安全
-actor DownloadService {
+/// 方法均为无状态纯函数调用，无需 actor 串行化
+struct DownloadService: Sendable {
     private let httpClient = HTTPClient.shared
     private let fileService: FileService
 

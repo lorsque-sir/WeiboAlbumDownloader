@@ -73,7 +73,8 @@ struct CronExpression: Sendable {
     }
 
     /// 计算指定时间之后的下一个触发时间
-    /// 通过逐分钟递增匹配的方式查找，最远查找 366 天
+    /// 使用字段优先跳跃算法：按月→日→时→分逐级跳转到下一个匹配值，
+    /// 避免逐分钟遍历，将最坏情况从 ~527K 次循环降低到 ~100 次
     func nextDate(after date: Date) -> Date? {
         let calendar = Calendar.current
         var components = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: date)
@@ -83,20 +84,62 @@ struct CronExpression: Sendable {
         candidate = calendar.date(byAdding: .minute, value: 1, to: candidate) ?? candidate
 
         let limit = calendar.date(byAdding: .day, value: 366, to: date) ?? date
+        var iterations = 0
+        let maxIterations = 1500
 
-        while candidate < limit {
-            let c = calendar.dateComponents([.minute, .hour, .day, .month, .weekday], from: candidate)
+        while candidate < limit, iterations < maxIterations {
+            iterations += 1
+            let c = calendar.dateComponents([.year, .month, .day, .hour, .minute, .weekday], from: candidate)
 
-            if minute.matches(c.minute ?? 0)
-                && hour.matches(c.hour ?? 0)
-                && dayOfMonth.matches(c.day ?? 1)
-                && month.matches(c.month ?? 1)
-                // Calendar 中 Sunday=1，Cron 中 Sunday=0，需转换
-                && dayOfWeek.matches((c.weekday ?? 1) - 1) {
-                return candidate
+            let cMonth = c.month ?? 1
+            let cDay = c.day ?? 1
+            let cHour = c.hour ?? 0
+            let cMinute = c.minute ?? 0
+            let cWeekday = (c.weekday ?? 1) - 1
+
+            if !month.matches(cMonth) {
+                if let next = month.nextMatch(after: cMonth) {
+                    var nc = DateComponents(year: c.year, month: next, day: 1, hour: 0, minute: 0)
+                    if next <= cMonth { nc.year = (c.year ?? 2024) + 1 }
+                    candidate = calendar.date(from: nc) ?? candidate
+                } else {
+                    var nc = DateComponents(year: (c.year ?? 2024) + 1, month: month.firstValue ?? 1, day: 1, hour: 0, minute: 0)
+                    nc.second = 0
+                    candidate = calendar.date(from: nc) ?? candidate
+                }
+                continue
             }
 
-            candidate = calendar.date(byAdding: .minute, value: 1, to: candidate) ?? candidate
+            if !dayOfMonth.matches(cDay) || !dayOfWeek.matches(cWeekday) {
+                candidate = calendar.date(byAdding: .day, value: 1, to:
+                    calendar.date(from: DateComponents(year: c.year, month: c.month, day: c.day, hour: 0, minute: 0))!
+                ) ?? candidate
+                continue
+            }
+
+            if !hour.matches(cHour) {
+                if let next = hour.nextMatch(after: cHour) {
+                    candidate = calendar.date(from: DateComponents(year: c.year, month: c.month, day: c.day, hour: next, minute: minute.firstValue ?? 0))!
+                } else {
+                    candidate = calendar.date(byAdding: .day, value: 1, to:
+                        calendar.date(from: DateComponents(year: c.year, month: c.month, day: c.day, hour: 0, minute: 0))!
+                    ) ?? candidate
+                }
+                continue
+            }
+
+            if !minute.matches(cMinute) {
+                if let next = minute.nextMatch(after: cMinute) {
+                    candidate = calendar.date(from: DateComponents(year: c.year, month: c.month, day: c.day, hour: c.hour, minute: next))!
+                } else {
+                    candidate = calendar.date(byAdding: .hour, value: 1, to:
+                        calendar.date(from: DateComponents(year: c.year, month: c.month, day: c.day, hour: c.hour, minute: 0))!
+                    ) ?? candidate
+                }
+                continue
+            }
+
+            return candidate
         }
 
         return nil
@@ -156,6 +199,22 @@ enum CronField: Sendable {
         switch self {
         case .any: return true
         case .values(let set): return set.contains(value)
+        }
+    }
+
+    /// 返回大于 current 的下一个匹配值，无则返回 nil（需绕回）
+    func nextMatch(after current: Int) -> Int? {
+        switch self {
+        case .any: return current + 1
+        case .values(let set): return set.sorted().first(where: { $0 > current })
+        }
+    }
+
+    /// 返回字段中最小的匹配值
+    var firstValue: Int? {
+        switch self {
+        case .any: return 0
+        case .values(let set): return set.min()
         }
     }
 }

@@ -29,7 +29,10 @@ struct MainView: View {
                 if viewModel.messages.isEmpty && !viewModel.isDownloading {
                     emptyStateView
                 } else {
-                    LogListView(messages: viewModel.messages)
+                    LogListView(
+                        messages: viewModel.messages.reversed(),
+                        filterLevel: $viewModel.logFilterLevel
+                    )
                 }
             }
             .frame(minWidth: 500)
@@ -370,32 +373,52 @@ struct MainView: View {
     // MARK: - 进度面板
 
     private var progressPanel: some View {
-        HStack(spacing: 12) {
-            if viewModel.isDownloading {
-                ProgressView()
-                    .controlSize(.small)
-                    .frame(width: 16, height: 16)
+        VStack(spacing: 6) {
+            HStack(spacing: 12) {
+                if viewModel.isDownloading {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(width: 16, height: 16)
+                }
+
+                if !viewModel.isDownloading && viewModel.progress.total > 0 {
+                    Image(systemName: "checkmark.seal.fill")
+                        .foregroundStyle(.green)
+                        .font(.system(size: 14))
+                }
+
+                Text(progressText)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                if viewModel.progress.isBatchMode {
+                    Text("用户 \(viewModel.progress.batchCurrentIndex)/\(viewModel.progress.batchTotalCount)")
+                        .font(.caption2)
+                        .fontWeight(.medium)
+                        .foregroundStyle(.blue)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(.blue.opacity(0.1), in: Capsule())
+                }
+
+                if viewModel.progress.total > 0 {
+                    Text("共 \(viewModel.progress.total) 个文件")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(.quaternary.opacity(0.5), in: Capsule())
+                }
             }
 
-            if !viewModel.isDownloading && viewModel.progress.total > 0 {
-                Image(systemName: "checkmark.seal.fill")
-                    .foregroundStyle(.green)
-                    .font(.system(size: 14))
-            }
-
-            Text(progressText)
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-
-            Spacer()
-
-            if viewModel.progress.total > 0 {
-                Text("共 \(viewModel.progress.total) 个文件")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(.quaternary.opacity(0.5), in: Capsule())
+            if viewModel.isDownloading && viewModel.progress.isBatchMode {
+                ProgressView(
+                    value: Double(viewModel.progress.batchCurrentIndex),
+                    total: Double(max(viewModel.progress.batchTotalCount, 1))
+                )
+                .tint(.blue)
             }
         }
         .padding(.horizontal, 16)
@@ -478,6 +501,18 @@ struct MainView: View {
                     .foregroundStyle(.red)
                 Text("下载失败的文件")
                     .font(.headline)
+                Spacer()
+                if !viewModel.failedItems.isEmpty && !viewModel.isDownloading {
+                    Button {
+                        showFailedItems = false
+                        viewModel.retryFailedItems()
+                    } label: {
+                        Label("全部重试", systemImage: "arrow.clockwise")
+                            .font(.system(size: 12))
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.orange)
+                }
             }
             .padding(.bottom, 2)
 
@@ -490,13 +525,26 @@ struct MainView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 6) {
                         ForEach(viewModel.failedItems) { item in
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(item.fileName)
-                                    .font(.system(.caption, design: .monospaced))
-                                    .lineLimit(1)
-                                Text(item.errorDescription)
-                                    .font(.caption2)
-                                    .foregroundStyle(.red)
+                            HStack(alignment: .top) {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(item.fileName)
+                                        .font(.system(.caption, design: .monospaced))
+                                        .lineLimit(1)
+                                    Text(item.errorDescription)
+                                        .font(.caption2)
+                                        .foregroundStyle(.red)
+                                }
+                                Spacer()
+                                Button {
+                                    NSPasteboard.general.clearContents()
+                                    NSPasteboard.general.setString(item.url.absoluteString, forType: .string)
+                                } label: {
+                                    Image(systemName: "doc.on.doc")
+                                        .font(.system(size: 10))
+                                }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(.secondary)
+                                .help("复制 URL")
                             }
                             .padding(8)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -508,6 +556,6 @@ struct MainView: View {
             }
         }
         .padding()
-        .frame(width: 380)
+        .frame(width: 400)
     }
 }
