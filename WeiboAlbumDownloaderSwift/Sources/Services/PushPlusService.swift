@@ -14,7 +14,7 @@ enum PushPlusService {
         let encodedTitle = title.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? title
         let encodedContent = content.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? content
 
-        guard let url = URL(string: "http://www.pushplus.plus/send?token=\(token)&title=\(encodedTitle)&content=\(encodedContent)") else {
+        guard let url = URL(string: "https://www.pushplus.plus/send?token=\(token)&title=\(encodedTitle)&content=\(encodedContent)") else {
             return
         }
 

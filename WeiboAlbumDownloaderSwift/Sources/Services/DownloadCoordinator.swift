@@ -43,12 +43,12 @@ actor DownloadCoordinator {
         let cookie = settings.activeCookie ?? ""
         guard !cookie.isEmpty else {
             log("没有检测到 Cookie，请在设置中扫码获取", .error)
-            return
+            throw DownloadError.noCookie
         }
 
         guard Int64(uid) != nil else {
             log("错误的微博 UID: \(uid)", .error)
-            return
+            throw DownloadError.invalidUID(uid)
         }
 
         log("开始下载 \(uid)", .info)
@@ -304,6 +304,22 @@ actor DownloadCoordinator {
             }
 
             return results
+        }
+    }
+}
+
+// MARK: - 下载错误
+
+enum DownloadError: LocalizedError {
+    case noCookie
+    case invalidUID(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .noCookie:
+            return "没有检测到 Cookie，请在设置中扫码获取"
+        case .invalidUID(let uid):
+            return "错误的微博 UID: \(uid)"
         }
     }
 }

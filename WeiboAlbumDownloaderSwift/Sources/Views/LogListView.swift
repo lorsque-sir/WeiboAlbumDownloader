@@ -2,59 +2,85 @@ import SwiftUI
 
 // MARK: - 日志列表视图
 
-/// 展示下载过程中的实时日志，支持：
-/// - 不同日志级别对应不同颜色和图标
-/// - 文本可选中复制
-/// - 右键菜单：复制全部日志、导出日志到文件
 struct LogListView: View {
     let messages: [LogMessage]
 
     var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 2) {
-                    ForEach(messages.reversed()) { message in
-                        HStack(alignment: .top, spacing: 8) {
-                            Text(message.timeString)
-                                .font(.system(.caption, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                                .frame(width: 60, alignment: .leading)
-
-                            logIcon(for: message.level)
-                                .frame(width: 14)
-
-                            Text(message.text)
-                                .font(.system(.caption))
-                                .foregroundStyle(message.color)
-                                .textSelection(.enabled)
-                                .lineLimit(3)
-                        }
-                        .padding(.vertical, 1)
-                        .padding(.horizontal, 8)
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(messages.enumerated()), id: \.element.id) { index, message in
+                    LogRowView(message: message, isEven: index % 2 == 0)
                         .id(message.id)
-                    }
                 }
             }
         }
         .contextMenu {
-            Button("复制全部日志") {
-                let text = messages.map { "[\($0.timeString)] \($0.text)" }.joined(separator: "\n")
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(text, forType: .string)
+            Button {
+                copyAllLogs()
+            } label: {
+                Label("复制全部日志", systemImage: "doc.on.doc")
             }
-            Button("导出日志...") {
+            Button {
                 exportLog()
+            } label: {
+                Label("导出日志...", systemImage: "square.and.arrow.up")
             }
         }
     }
 
-    /// 不同日志级别对应的图标
-    private func logIcon(for level: LogLevel) -> some View {
+    private func copyAllLogs() {
+        let text = messages.reversed().map { "[\($0.timeString)] \($0.text)" }.joined(separator: "\n")
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    private func exportLog() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.plainText]
+        panel.nameFieldStringValue = "weibo-download-log.txt"
+
+        if panel.runModal() == .OK, let url = panel.url {
+            let text = messages.reversed().map { "[\($0.timeString)] [\($0.level.rawValue)] \($0.text)" }.joined(separator: "\n")
+            try? text.write(to: url, atomically: true, encoding: .utf8)
+        }
+    }
+}
+
+// MARK: - 单行日志
+
+private struct LogRowView: View {
+    let message: LogMessage
+    let isEven: Bool
+    @State private var isHovered = false
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text(message.timeString)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(.tertiary)
+                .frame(width: 58, alignment: .leading)
+
+            logLevelBadge
+
+            Text(message.text)
+                .font(.system(size: 12))
+                .foregroundStyle(message.color)
+                .textSelection(.enabled)
+                .lineLimit(3)
+        }
+        .padding(.vertical, 4)
+        .padding(.horizontal, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(rowBackground)
+        .onHover { isHovered = $0 }
+    }
+
+    private var logLevelBadge: some View {
         Group {
-            switch level {
+            switch message.level {
             case .info:
-                Image(systemName: "info.circle")
-                    .foregroundStyle(.secondary)
+                Image(systemName: "info.circle.fill")
+                    .foregroundStyle(.blue.opacity(0.6))
             case .success:
                 Image(systemName: "checkmark.circle.fill")
                     .foregroundStyle(.green)
@@ -66,18 +92,19 @@ struct LogListView: View {
                     .foregroundStyle(.red)
             }
         }
-        .font(.caption)
+        .font(.system(size: 11))
+        .frame(width: 14)
     }
 
-    /// 通过 NSSavePanel 导出日志到文本文件
-    private func exportLog() {
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.plainText]
-        panel.nameFieldStringValue = "weibo-download-log.txt"
-
-        if panel.runModal() == .OK, let url = panel.url {
-            let text = messages.map { "[\($0.timeString)] [\($0.level.rawValue)] \($0.text)" }.joined(separator: "\n")
-            try? text.write(to: url, atomically: true, encoding: .utf8)
+    private var rowBackground: some View {
+        Group {
+            if isHovered {
+                Color.accentColor.opacity(0.06)
+            } else if isEven {
+                Color(nsColor: .alternatingContentBackgroundColors[1]).opacity(0.5)
+            } else {
+                Color.clear
+            }
         }
     }
 }

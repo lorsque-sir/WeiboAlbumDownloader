@@ -20,10 +20,9 @@ struct LogMessage: Identifiable, Sendable {
         Self.formatter.string(from: time)
     }
 
-    /// 不同级别对应不同颜色：info=默认, success=绿色, warning=橙色, error=红色
     var color: Color {
         switch level {
-        case .info:    return .primary
+        case .info:    return .secondary
         case .success: return .green
         case .warning: return .orange
         case .error:   return .red

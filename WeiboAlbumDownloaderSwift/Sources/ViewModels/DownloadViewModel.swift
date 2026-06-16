@@ -58,13 +58,16 @@ final class DownloadViewModel: ObservableObject {
     func configureCronScheduler() {
         settings = AppSettings.load()
 
-        if let scheduler = cronScheduler {
-            Task { await scheduler.stop() }
-            cronScheduler = nil
-        }
+        let oldScheduler = cronScheduler
+        cronScheduler = nil
 
         guard settings.enableCrontab,
-              let expression = settings.crontab, !expression.isEmpty else { return }
+              let expression = settings.crontab, !expression.isEmpty else {
+            if let old = oldScheduler {
+                Task { await old.stop() }
+            }
+            return
+        }
 
         let scheduler = CronScheduler { @MainActor [weak self] in
             guard let self, !self.isDownloading else { return }
@@ -72,7 +75,13 @@ final class DownloadViewModel: ObservableObject {
             self.batchDownload()
         }
         cronScheduler = scheduler
-        Task { await scheduler.start(expression: expression) }
+
+        Task {
+            if let old = oldScheduler {
+                await old.stop()
+            }
+            await scheduler.start(expression: expression)
+        }
         appendLog("Cron 定时任务已启动: \(expression)", level: .info)
     }
 
@@ -143,18 +152,19 @@ final class DownloadViewModel: ObservableObject {
                         }
                     }
                 )
-                appendLog("下载完成", level: .success)
+                let p = progress
+                appendLog("下载完成 — 成功 \(p.completed) / 跳过 \(p.skipped) / 失败 \(p.failed)", level: .success)
 
-                // 下载完成后发送 PushPlus 微信推送
                 if let token = settings.pushPlusToken, !token.isEmpty {
-                    let info = "\(userInfo?.screenName ?? targetUID) 于 \(DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)) 结束下载"
+                    let info = "\(userInfo?.screenName ?? targetUID) 下载完成：成功 \(p.completed) / 跳过 \(p.skipped) / 失败 \(p.failed)"
                     await PushPlusService.sendMessage(token: token, title: "微博相册下载", content: info)
                 }
 
-                // 自动将下载过的 UID 追加到 uidList.txt
                 addToUidList(uid: targetUID, nickname: userInfo?.screenName)
             } catch is CancellationError {
                 appendLog("下载已取消", level: .info)
+            } catch let dlError as DownloadError {
+                appendLog(dlError.localizedDescription, level: .error)
             } catch {
                 appendLog("下载出错: \(error.localizedDescription)", level: .error)
             }
@@ -217,7 +227,13 @@ final class DownloadViewModel: ObservableObject {
                 }
             }
 
-            appendLog("批量下载完成", level: .success)
+            let p = progress
+            appendLog("批量下载完成 — 成功 \(p.completed) / 跳过 \(p.skipped) / 失败 \(p.failed)", level: .success)
+
+            if let token = settings.pushPlusToken, !token.isEmpty {
+                let info = "批量下载 \(uids.count) 个用户完成：成功 \(p.completed) / 跳过 \(p.skipped) / 失败 \(p.failed)"
+                await PushPlusService.sendMessage(token: token, title: "微博相册批量下载", content: info)
+            }
             isDownloading = false
         }
     }
@@ -248,12 +264,12 @@ final class DownloadViewModel: ObservableObject {
         }
     }
 
-    /// 添加日志消息（追加到尾部，UI 侧反转显示最新在前），限制最多 500 条
+    /// 添加日志消息（头部插入，最新在前），限制最多 500 条
     private func appendLog(_ text: String, level: LogLevel = .info) {
         let msg = LogMessage(text, level: level)
-        messages.append(msg)
+        messages.insert(msg, at: 0)
         if messages.count > 500 {
-            messages.removeFirst(messages.count - 500)
+            messages.removeLast(messages.count - 500)
         }
     }
 
