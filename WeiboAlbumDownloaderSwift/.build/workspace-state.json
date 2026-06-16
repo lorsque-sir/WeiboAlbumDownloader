@@ -1,0 +1,47 @@
+{
+  "object" : {
+    "artifacts" : [
+
+    ],
+    "dependencies" : [
+      {
+        "basedOn" : null,
+        "packageRef" : {
+          "identity" : "keychainaccess",
+          "kind" : "remoteSourceControl",
+          "location" : "https://github.com/kishikawakatsumi/KeychainAccess.git",
+          "name" : "KeychainAccess"
+        },
+        "state" : {
+          "checkoutState" : {
+            "revision" : "84e546727d66f1adc5439debad16270d0fdd04e7",
+            "version" : "4.2.2"
+          },
+          "name" : "sourceControlCheckout"
+        },
+        "subpath" : "KeychainAccess"
+      },
+      {
+        "basedOn" : null,
+        "packageRef" : {
+          "identity" : "swiftsoup",
+          "kind" : "remoteSourceControl",
+          "location" : "https://github.com/scinfu/SwiftSoup.git",
+          "name" : "SwiftSoup"
+        },
+        "state" : {
+          "checkoutState" : {
+            "revision" : "49dcadd93161f4a44b4994d3a3e8de9f085aface",
+            "version" : "2.13.5"
+          },
+          "name" : "sourceControlCheckout"
+        },
+        "subpath" : "SwiftSoup"
+      }
+    ],
+    "prebuilts" : [
+
+    ]
+  },
+  "version" : 7
+}
