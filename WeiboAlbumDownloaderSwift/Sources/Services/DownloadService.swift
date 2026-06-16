@@ -48,9 +48,9 @@ actor DownloadService {
         setTimestamp: Bool = true
     ) async -> DownloadResult {
         let fileName = item.fileName(post: post, shortenName: shortenName)
-        let destination = fileService.destinationURL(directory: directory, fileName: fileName)
+        let (exists, destination) = fileService.resolveFile(directory: directory, fileName: fileName)
 
-        if fileService.fileExists(directory: directory, fileName: fileName) {
+        if exists {
             return .skipped(url: item.url, destination: destination)
         }
 

@@ -32,19 +32,28 @@ struct FileService: Sendable {
         return dir
     }
 
+    /// 将原始文件名清洗并截断为合法的磁盘文件名
+    func cleanFileName(_ name: String) -> String {
+        truncateFileName(sanitizeFileName(name), maxLength: 200)
+    }
+
+    /// 一次性判断文件是否已存在并返回目标路径，避免重复计算文件名
+    func resolveFile(directory: URL, fileName: String) -> (exists: Bool, destination: URL) {
+        let cleaned = cleanFileName(fileName)
+        let target = directory.appendingPathComponent(cleaned)
+        let exists = FileManager.default.fileExists(atPath: target.path)
+        return (exists, exists ? target : uniqueURL(for: target))
+    }
+
     /// 计算文件最终存储路径（包含清洗文件名、截断、去重）
     func destinationURL(directory: URL, fileName: String) -> URL {
-        let cleaned = sanitizeFileName(fileName)
-        let truncated = truncateFileName(cleaned, maxLength: 200)
-        let target = directory.appendingPathComponent(truncated)
+        let target = directory.appendingPathComponent(cleanFileName(fileName))
         return uniqueURL(for: target)
     }
 
     /// 检查文件是否已存在（用于增量下载的智能跳过逻辑）
     func fileExists(directory: URL, fileName: String) -> Bool {
-        let cleaned = sanitizeFileName(fileName)
-        let truncated = truncateFileName(cleaned, maxLength: 200)
-        let path = directory.appendingPathComponent(truncated).path
+        let path = directory.appendingPathComponent(cleanFileName(fileName)).path
         return FileManager.default.fileExists(atPath: path)
     }
 

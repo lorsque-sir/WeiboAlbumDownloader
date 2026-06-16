@@ -26,26 +26,53 @@ final class SettingsViewModel: ObservableObject {
             return
         }
         try? settings.save()
+        NotificationCenter.default.post(name: .settingsDidChange, object: nil)
     }
 
-    /// 设置 weibo.cn 域 Cookie 并立即保存
+    /// 设置 weibo.cn 域 Cookie（存入 Keychain）
     func setCnCookie(_ cookie: String) {
-        settings.weiboCnCookie = cookie
-        save()
+        CookieService.saveCnCookie(cookie)
+        objectWillChange.send()
     }
 
-    /// 设置 weibo.com 域 Cookie 并立即保存
+    /// 设置 weibo.com 域 Cookie（存入 Keychain）
     func setComCookie(_ cookie: String) {
-        settings.weiboComCookie = cookie
-        save()
+        CookieService.saveComCookie(cookie)
+        objectWillChange.send()
     }
 
     var hasCnCookie: Bool {
-        !(settings.weiboCnCookie ?? "").isEmpty
+        !(CookieService.loadCnCookie() ?? "").isEmpty
     }
 
     var hasComCookie: Bool {
-        !(settings.weiboComCookie ?? "").isEmpty
+        !(CookieService.loadComCookie() ?? "").isEmpty
+    }
+
+    /// Keychain 中的 weibo.cn Cookie（用于手动粘贴 TextField 绑定）
+    var cnCookieText: String {
+        get { CookieService.loadCnCookie() ?? "" }
+        set {
+            if newValue.isEmpty {
+                CookieService.saveCnCookie("")
+            } else {
+                CookieService.saveCnCookie(newValue)
+            }
+            objectWillChange.send()
+        }
+    }
+
+    /// Keychain 中的 weibo.com Cookie（用于手动粘贴 TextField 绑定）
+    var comCookieText: String {
+        get { CookieService.loadComCookie() ?? "" }
+        set {
+            if newValue.isEmpty {
+                CookieService.saveComCookie("")
+            } else {
+                CookieService.saveComCookie(newValue)
+            }
+            objectWillChange.send()
+        }
     }
 
     var crontabDescription: String {

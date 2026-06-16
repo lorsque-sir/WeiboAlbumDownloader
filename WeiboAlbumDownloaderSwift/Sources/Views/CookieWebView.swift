@@ -60,6 +60,8 @@ struct CookieWebView: View {
 extension Notification.Name {
     /// 用于触发 Cookie 提取的通知名
     static let extractCookie = Notification.Name("extractCookie")
+    /// 设置已变更，通知 DownloadViewModel 重新配置（如 Cron 调度器）
+    static let settingsDidChange = Notification.Name("settingsDidChange")
 }
 
 /// WKWebView 的 NSViewRepresentable 桥接

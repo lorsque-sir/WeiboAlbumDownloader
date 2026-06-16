@@ -89,10 +89,7 @@ struct SettingsView: View {
                     }
                 }
 
-                TextField("或手动粘贴 Cookie", text: Binding(
-                    get: { viewModel.settings.weiboCnCookie ?? "" },
-                    set: { viewModel.settings.weiboCnCookie = $0.isEmpty ? nil : $0 }
-                ))
+                TextField("或手动粘贴 Cookie", text: $viewModel.cnCookieText)
                 .textFieldStyle(.roundedBorder)
                 .font(.system(.caption, design: .monospaced))
 
@@ -123,10 +120,7 @@ struct SettingsView: View {
                     }
                 }
 
-                TextField("或手动粘贴 Cookie", text: Binding(
-                    get: { viewModel.settings.weiboComCookie ?? "" },
-                    set: { viewModel.settings.weiboComCookie = $0.isEmpty ? nil : $0 }
-                ))
+                TextField("或手动粘贴 Cookie", text: $viewModel.comCookieText)
                 .textFieldStyle(.roundedBorder)
                 .font(.system(.caption, design: .monospaced))
             }
@@ -153,6 +147,9 @@ struct SettingsView: View {
                     TextField("", value: $viewModel.settings.countDownloadedSkipToNextUser, format: .number)
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 80)
+                        .onChange(of: viewModel.settings.countDownloadedSkipToNextUser) { newVal in
+                            viewModel.settings.countDownloadedSkipToNextUser = max(1, min(999, newVal))
+                        }
                     Text("个已存在文件")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -204,6 +201,18 @@ struct SettingsView: View {
                         ))
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 200)
+
+                        if let cron = viewModel.settings.crontab, !cron.isEmpty {
+                            if CronExpression(cron) != nil {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundStyle(.green)
+                                    .help("表达式格式正确")
+                            } else {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundStyle(.red)
+                                    .help("格式错误，需要 5 个字段：分 时 日 月 周")
+                            }
+                        }
                     }
                     Text("例如 \"14 2 * * *\" 表示每天凌晨 2:14 执行")
                         .font(.caption)

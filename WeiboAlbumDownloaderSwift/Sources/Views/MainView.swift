@@ -6,7 +6,7 @@ import SwiftUI
 /// - 左侧：用户信息面板（头像、昵称、操作按钮）
 /// - 右侧：UID 输入栏 + 下载日志列表
 struct MainView: View {
-    @StateObject private var viewModel = DownloadViewModel()
+    @EnvironmentObject var viewModel: DownloadViewModel
 
     var body: some View {
         HSplitView {
@@ -16,6 +16,11 @@ struct MainView: View {
             VStack(spacing: 0) {
                 controlBar
                     .padding()
+
+                if viewModel.isDownloading || viewModel.progress.total > 0 {
+                    progressPanel
+                    Divider()
+                }
 
                 Divider()
 
@@ -123,6 +128,93 @@ struct MainView: View {
                     .font(.system(size: 40))
                     .foregroundStyle(.tertiary)
             }
+    }
+
+    // MARK: - 进度面板
+
+    @State private var showFailedItems = false
+
+    private var progressPanel: some View {
+        HStack(spacing: 16) {
+            if viewModel.isDownloading {
+                ProgressView()
+                    .scaleEffect(0.7)
+                    .frame(width: 16, height: 16)
+
+                if viewModel.progress.currentPage > 0 {
+                    Text("第 \(viewModel.progress.currentPage) 页")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            HStack(spacing: 12) {
+                Label("\(viewModel.progress.completed)", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                Label("\(viewModel.progress.skipped)", systemImage: "arrow.right.circle.fill")
+                    .foregroundStyle(.orange)
+
+                if viewModel.progress.failed > 0 {
+                    Button {
+                        showFailedItems = true
+                    } label: {
+                        Label("\(viewModel.progress.failed)", systemImage: "xmark.circle.fill")
+                            .foregroundStyle(.red)
+                    }
+                    .buttonStyle(.plain)
+                    .popover(isPresented: $showFailedItems) {
+                        failedItemsPopover
+                    }
+                } else {
+                    Label("0", systemImage: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .font(.caption)
+
+            Spacer()
+
+            if !viewModel.isDownloading && viewModel.progress.total > 0 {
+                Text(viewModel.progress.summaryText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 6)
+        .background(.ultraThinMaterial)
+    }
+
+    private var failedItemsPopover: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("下载失败的文件")
+                .font(.headline)
+                .padding(.bottom, 4)
+
+            if viewModel.failedItems.isEmpty {
+                Text("暂无失败项")
+                    .foregroundStyle(.secondary)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 4) {
+                        ForEach(viewModel.failedItems) { item in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(item.fileName)
+                                    .font(.caption)
+                                    .lineLimit(1)
+                                Text(item.errorDescription)
+                                    .font(.caption2)
+                                    .foregroundStyle(.red)
+                            }
+                            Divider()
+                        }
+                    }
+                }
+                .frame(maxHeight: 300)
+            }
+        }
+        .padding()
+        .frame(width: 350)
     }
 
     // MARK: - 控制栏

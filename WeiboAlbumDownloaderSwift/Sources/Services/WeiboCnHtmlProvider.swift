@@ -148,8 +148,24 @@ struct WeiboCnHtmlProvider: WeiboDataProvider {
         )
     }
 
-    /// 解析 weibo.cn 的多种时间格式
-    /// 支持："N分钟前 来自iPhone"、"今天12:34 来自..."、"2024-03-15 14:30:00 来自..."、"MM月dd日 HH:mm"
+    // MARK: - 缓存的 DateFormatter
+
+    private static let timeOnlyFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm"
+        f.locale = Locale(identifier: "en_US_POSIX")
+        return f
+    }()
+
+    private static let dateTimeFormatters: [DateFormatter] = {
+        ["yyyy-MM-dd HH:mm:ss", "yyyy-MM-dd HH:mm", "MM月dd日 HH:mm"].map { format in
+            let f = DateFormatter()
+            f.dateFormat = format
+            f.locale = Locale(identifier: "en_US_POSIX")
+            return f
+        }
+    }()
+
     private func parseWeiboCnTime(_ text: String) -> Date? {
         let parts = text.components(separatedBy: " ")
         guard !parts.isEmpty else { return nil }
@@ -165,9 +181,7 @@ struct WeiboCnHtmlProvider: WeiboDataProvider {
 
         if timePart.contains("今天") {
             let timeStr = timePart.replacingOccurrences(of: "今天", with: "")
-            let formatter = DateFormatter()
-            formatter.dateFormat = "HH:mm"
-            if let time = formatter.date(from: timeStr) {
+            if let time = Self.timeOnlyFormatter.date(from: timeStr) {
                 let calendar = Calendar.current
                 let now = Date()
                 var components = calendar.dateComponents([.year, .month, .day], from: now)
@@ -178,14 +192,10 @@ struct WeiboCnHtmlProvider: WeiboDataProvider {
             }
         }
 
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        for format in ["yyyy-MM-dd HH:mm:ss", "yyyy-MM-dd HH:mm", "MM月dd日 HH:mm"] {
-            formatter.dateFormat = format
+        for formatter in Self.dateTimeFormatters {
             if let date = formatter.date(from: timePart) { return date }
         }
 
-        // 无法解析时使用当前时间作为兜底
         return Date()
     }
 }

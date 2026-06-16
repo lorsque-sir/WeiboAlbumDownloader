@@ -8,20 +8,30 @@ import Foundation
 actor HTTPClient {
     static let shared = HTTPClient()
 
-    private let session: URLSession
+    /// API 请求用的 session（短超时）
+    private let apiSession: URLSession
+    /// 文件下载用的 session（长超时，适配大视频）
+    private let downloadSession: URLSession
+
+    private static let defaultHeaders: [String: String] = [
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Referer": "https://m.weibo.cn/",
+    ]
 
     private init() {
-        let config = URLSessionConfiguration.default
-        // 伪装浏览器 User-Agent，防止被微博接口拒绝
-        config.httpAdditionalHeaders = [
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-            "Referer": "https://m.weibo.cn/",
-        ]
-        config.timeoutIntervalForRequest = 30
-        config.timeoutIntervalForResource = 120
-        session = URLSession(configuration: config)
+        let apiConfig = URLSessionConfiguration.default
+        apiConfig.httpAdditionalHeaders = Self.defaultHeaders
+        apiConfig.timeoutIntervalForRequest = 30
+        apiConfig.timeoutIntervalForResource = 120
+        apiSession = URLSession(configuration: apiConfig)
+
+        let dlConfig = URLSessionConfiguration.default
+        dlConfig.httpAdditionalHeaders = Self.defaultHeaders
+        dlConfig.timeoutIntervalForRequest = 60
+        dlConfig.timeoutIntervalForResource = 300
+        downloadSession = URLSession(configuration: dlConfig)
     }
 
     /// 请求 JSON API 并自动反序列化为指定 Codable 类型
@@ -34,7 +44,7 @@ actor HTTPClient {
         var request = URLRequest(url: url)
         request.setValue(cookie, forHTTPHeaderField: "Cookie")
 
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await apiSession.data(for: request)
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw HTTPError.invalidResponse
@@ -59,7 +69,7 @@ actor HTTPClient {
         var request = URLRequest(url: url)
         request.setValue(cookie, forHTTPHeaderField: "Cookie")
 
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await apiSession.data(for: request)
 
         guard let httpResponse = response as? HTTPURLResponse,
               (200...299).contains(httpResponse.statusCode) else {
@@ -77,10 +87,34 @@ actor HTTPClient {
         return html
     }
 
-    /// 下载文件到指定路径（先下载到临时目录，完成后再移动，保证原子性）
-    func downloadFile(_ url: URL, to destination: URL) async throws {
+    /// 下载文件到指定路径，自动重试最多 3 次（指数退避: 2s, 4s, 8s）
+    func downloadFile(_ url: URL, to destination: URL, maxRetries: Int = 3) async throws {
+        var lastError: Error?
+
+        for attempt in 0...maxRetries {
+            do {
+                try await performDownload(url, to: destination)
+                return
+            } catch let error as HTTPError where error.isRetryable {
+                lastError = error
+            } catch let error as URLError {
+                lastError = error
+            } catch {
+                throw error
+            }
+
+            if attempt < maxRetries {
+                let delay = UInt64(pow(2.0, Double(attempt + 1)))
+                try? await Task.sleep(for: .seconds(delay))
+            }
+        }
+
+        throw lastError ?? HTTPError.invalidResponse
+    }
+
+    private func performDownload(_ url: URL, to destination: URL) async throws {
         let request = URLRequest(url: url)
-        let (tempURL, response) = try await session.download(for: request)
+        let (tempURL, response) = try await downloadSession.download(for: request)
 
         guard let httpResponse = response as? HTTPURLResponse,
               (200...299).contains(httpResponse.statusCode) else {
@@ -110,6 +144,15 @@ enum HTTPError: LocalizedError {
         case .statusCode(let c):   return "HTTP 错误: \(c)"
         case .cookieExpired:       return "Cookie 已失效，请重新扫码登录"
         case .decodingFailed:      return "数据解码失败"
+        }
+    }
+
+    /// 是否可重试（Cookie 过期和解码失败不应重试）
+    var isRetryable: Bool {
+        switch self {
+        case .cookieExpired, .decodingFailed: return false
+        case .invalidResponse: return true
+        case .statusCode(let code): return code >= 500 || code == 429
         }
     }
 }

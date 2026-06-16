@@ -14,10 +14,16 @@ actor DownloadCoordinator {
     private let fileService: FileService
     private let settings: AppSettings
 
-    /// 日志回调（Sendable 闭包，可安全跨 actor 传递）
     typealias LogHandler = @Sendable (String, LogLevel) -> Void
-    /// 用户信息回调（首次获取到用户信息时触发，用于更新 UI）
     typealias UserInfoHandler = @Sendable (WeiboUser) -> Void
+    /// 单文件下载结果回调（completed/skipped/failed），用于 UI 进度统计
+    enum DownloadEvent: Sendable {
+        case completed(fileName: String)
+        case skipped(fileName: String)
+        case failed(url: URL, fileName: String, error: String)
+        case pageLoaded(page: Int)
+    }
+    typealias ProgressHandler = @Sendable (DownloadEvent) -> Void
 
     init(settings: AppSettings) {
         self.settings = settings
@@ -31,7 +37,8 @@ actor DownloadCoordinator {
     func downloadUser(
         uid: String,
         log: LogHandler,
-        onUserInfo: UserInfoHandler
+        onUserInfo: UserInfoHandler,
+        onProgress: ProgressHandler? = nil
     ) async throws {
         let cookie = settings.activeCookie ?? ""
         guard !cookie.isEmpty else {
@@ -45,12 +52,13 @@ actor DownloadCoordinator {
         }
 
         log("开始下载 \(uid)", .info)
+        let progress = onProgress ?? { _ in }
 
         switch settings.dataSource {
         case .weiboCnMobile, .weiboCn:
-            try await downloadTimeline(uid: uid, cookie: cookie, log: log, onUserInfo: onUserInfo)
+            try await downloadTimeline(uid: uid, cookie: cookie, log: log, onUserInfo: onUserInfo, onProgress: progress)
         case .weiboCom1, .weiboCom2:
-            try await downloadAlbums(uid: uid, cookie: cookie, log: log, onUserInfo: onUserInfo)
+            try await downloadAlbums(uid: uid, cookie: cookie, log: log, onUserInfo: onUserInfo, onProgress: progress)
         }
     }
 
@@ -58,18 +66,18 @@ actor DownloadCoordinator {
 
     /// 按时间线翻页下载，适用于 m.weibo.cn 和 weibo.cn 数据源
     private func downloadTimeline(
-        uid: String, cookie: String, log: LogHandler, onUserInfo: UserInfoHandler
+        uid: String, cookie: String, log: LogHandler, onUserInfo: UserInfoHandler, onProgress: ProgressHandler
     ) async throws {
         var page = 1
         var sinceId: Int64 = 0
         var skipCount = 0
-        var userDir: URL?
+        var userDir = fileService.userDirectory(uid: uid, nickname: nil)
         var didSetUserInfo = false
 
         while !Task.isCancelled {
             let result = try await provider.fetchPage(
                 uid: uid, cookie: cookie, page: page, sinceId: sinceId,
-                weiboComCookie: settings.weiboComCookie
+                weiboComCookie: CookieService.loadComCookie()
             )
 
             guard result.hasMore, !result.posts.isEmpty else {
@@ -82,21 +90,17 @@ actor DownloadCoordinator {
             }
 
             log("正在下载第 \(page) 页，获取到 \(result.posts.count) 条微博", .info)
+            onProgress(.pageLoaded(page: page))
 
-            // 首次获取到用户信息时创建目录、下载头像
             if !didSetUserInfo, let user = result.user {
                 onUserInfo(user)
                 userDir = fileService.userDirectory(uid: uid, nickname: user.screenName)
-                fileService.createNicknameMarker(in: userDir!, nickname: user.screenName)
+                fileService.createNicknameMarker(in: userDir, nickname: user.screenName)
 
                 if settings.showHeadImage, let avatarURL = user.avatarURL {
-                    let _ = await downloadService.downloadAvatar(url: avatarURL, to: userDir!)
+                    let _ = await downloadService.downloadAvatar(url: avatarURL, to: userDir)
                 }
                 didSetUserInfo = true
-            }
-
-            if userDir == nil {
-                userDir = fileService.userDirectory(uid: uid, nickname: nil)
             }
 
             for post in result.posts {
@@ -105,7 +109,6 @@ actor DownloadCoordinator {
                     return
                 }
 
-                // 时间范围过滤：微博按时间倒序排列，遇到早于起始日期的直接停止
                 if settings.enableDatetimeRange, let startDate = settings.startDateTime {
                     if post.createdAt < startDate {
                         log("翻页到截至日期 \(startDate)，停止下载", .info)
@@ -115,23 +118,25 @@ actor DownloadCoordinator {
 
                 guard !post.mediaItems.isEmpty else { continue }
 
-                // 同一条微博内的多张图片并发下载（C# 版是串行逐张下载）
                 let results = await downloadMediaConcurrently(
-                    items: post.mediaItems, post: post, directory: userDir!
+                    items: post.mediaItems, post: post, directory: userDir
                 )
 
                 for r in results {
+                    let name = r.destination.lastPathComponent
                     if r.skipped {
                         skipCount += 1
-                        log("文件已存在，跳过: \(r.destination.lastPathComponent)", .warning)
+                        log("文件已存在，跳过: \(name)", .warning)
+                        onProgress(.skipped(fileName: name))
                     } else if let error = r.error {
                         log("下载失败: \(r.url) - \(error.localizedDescription)", .error)
+                        onProgress(.failed(url: r.url, fileName: name, error: error.localizedDescription))
                     } else {
-                        log("已完成: \(r.destination.lastPathComponent)", .success)
+                        log("已完成: \(name)", .success)
+                        onProgress(.completed(fileName: name))
                     }
                 }
 
-                // 智能跳过：连续遇到已存在文件超过阈值时，认为之前的内容已下载过，跳到下一用户
                 if settings.countDownloadedSkipToNextUser > 0,
                    skipCount > settings.countDownloadedSkipToNextUser {
                     log("已存在 \(skipCount) 个文件超过阈值 \(settings.countDownloadedSkipToNextUser)，跳到下一用户", .info)
@@ -152,7 +157,7 @@ actor DownloadCoordinator {
 
     /// 按相册逐个下载，适用于 photo.weibo.com 和 weibo.com Ajax 数据源
     private func downloadAlbums(
-        uid: String, cookie: String, log: LogHandler, onUserInfo: UserInfoHandler
+        uid: String, cookie: String, log: LogHandler, onUserInfo: UserInfoHandler, onProgress: ProgressHandler
     ) async throws {
         let albumResult = try await provider.fetchAlbums(uid: uid, cookie: cookie)
 
@@ -221,13 +226,17 @@ actor DownloadCoordinator {
                     )
 
                     for r in results {
+                        let name = r.destination.lastPathComponent
                         if r.skipped {
                             skipCount += 1
-                            log("文件已存在，跳过: \(r.destination.lastPathComponent)", .warning)
+                            log("文件已存在，跳过: \(name)", .warning)
+                            onProgress(.skipped(fileName: name))
                         } else if let error = r.error {
                             log("下载失败: \(error.localizedDescription)", .error)
+                            onProgress(.failed(url: r.url, fileName: name, error: error.localizedDescription))
                         } else {
-                            log("已完成: \(r.destination.lastPathComponent)", .success)
+                            log("已完成: \(name)", .success)
+                            onProgress(.completed(fileName: name))
                         }
                     }
 

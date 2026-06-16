@@ -110,12 +110,15 @@ struct WeiboCnMobileProvider: WeiboDataProvider {
 
     // MARK: - 日期解析
 
-    /// 解析 m.weibo.cn 的日期格式，如 "Tue Jun 04 12:34:56 +0800 2024"
+    private static let mobileDateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "EEE MMM dd HH:mm:ss Z yyyy"
+        f.locale = Locale(identifier: "en_US_POSIX")
+        return f
+    }()
+
     private func parseMobileDate(_ string: String) -> Date? {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "EEE MMM dd HH:mm:ss Z yyyy"
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        return formatter.date(from: string)
+        Self.mobileDateFormatter.date(from: string)
     }
 
     /// 将 avatar_hd URL 转换为最大尺寸头像 URL

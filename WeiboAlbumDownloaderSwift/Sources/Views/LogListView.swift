@@ -10,26 +10,32 @@ struct LogListView: View {
     let messages: [LogMessage]
 
     var body: some View {
-        List(messages) { message in
-            HStack(alignment: .top, spacing: 8) {
-                Text(message.timeString)
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 60, alignment: .leading)
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 2) {
+                    ForEach(messages.reversed()) { message in
+                        HStack(alignment: .top, spacing: 8) {
+                            Text(message.timeString)
+                                .font(.system(.caption, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 60, alignment: .leading)
 
-                logIcon(for: message.level)
-                    .frame(width: 14)
+                            logIcon(for: message.level)
+                                .frame(width: 14)
 
-                Text(message.text)
-                    .font(.system(.caption))
-                    .foregroundStyle(message.color)
-                    .textSelection(.enabled)
-                    .lineLimit(3)
+                            Text(message.text)
+                                .font(.system(.caption))
+                                .foregroundStyle(message.color)
+                                .textSelection(.enabled)
+                                .lineLimit(3)
+                        }
+                        .padding(.vertical, 1)
+                        .padding(.horizontal, 8)
+                        .id(message.id)
+                    }
+                }
             }
-            .listRowSeparator(.hidden)
-            .padding(.vertical, 1)
         }
-        .listStyle(.plain)
         .contextMenu {
             Button("复制全部日志") {
                 let text = messages.map { "[\($0.timeString)] \($0.text)" }.joined(separator: "\n")
@@ -70,7 +76,7 @@ struct LogListView: View {
         panel.nameFieldStringValue = "weibo-download-log.txt"
 
         if panel.runModal() == .OK, let url = panel.url {
-            let text = messages.reversed().map { "[\($0.timeString)] [\($0.level.rawValue)] \($0.text)" }.joined(separator: "\n")
+            let text = messages.map { "[\($0.timeString)] [\($0.level.rawValue)] \($0.text)" }.joined(separator: "\n")
             try? text.write(to: url, atomically: true, encoding: .utf8)
         }
     }

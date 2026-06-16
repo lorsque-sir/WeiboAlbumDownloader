@@ -34,9 +34,9 @@ struct AppSettings: Codable {
     /// 同一条微博内媒体文件的最大并发下载数
     var maxConcurrentDownloads: Int = 3
 
-    /// 根据当前数据源自动选择对应域的 Cookie
+    /// 根据当前数据源自动选择对应域的 Cookie（从 Keychain 读取）
     var activeCookie: String? {
-        dataSource.needsCnCookie ? weiboCnCookie : weiboComCookie
+        dataSource.needsCnCookie ? CookieService.loadCnCookie() : CookieService.loadComCookie()
     }
 
     /// 配置文件存储路径：~/Library/Application Support/WeiboAlbumDownloader/Settings.json
@@ -55,22 +55,43 @@ struct AppSettings: Codable {
         return dir
     }()
 
-    /// 从磁盘加载配置，文件不存在时返回默认值
+    /// 从磁盘加载配置，文件不存在时返回默认值。
+    /// 首次加载时自动将 JSON 中的明文 Cookie 迁移到 Keychain。
     static func load() -> AppSettings {
         guard FileManager.default.fileExists(atPath: settingsURL.path),
               let data = try? Data(contentsOf: settingsURL),
-              let settings = try? JSONDecoder().decode(AppSettings.self, from: data)
+              var settings = try? JSONDecoder().decode(AppSettings.self, from: data)
         else {
             return AppSettings()
         }
+
+        // 将旧版 JSON 明文 Cookie 迁移到 Keychain，迁移后清除 JSON 中的值
+        var migrated = false
+        if let cn = settings.weiboCnCookie, !cn.isEmpty, CookieService.loadCnCookie() == nil {
+            CookieService.saveCnCookie(cn)
+            settings.weiboCnCookie = nil
+            migrated = true
+        }
+        if let com = settings.weiboComCookie, !com.isEmpty, CookieService.loadComCookie() == nil {
+            CookieService.saveComCookie(com)
+            settings.weiboComCookie = nil
+            migrated = true
+        }
+        if migrated {
+            try? settings.save()
+        }
+
         return settings
     }
 
-    /// 将当前配置原子性写入磁盘
+    /// 将当前配置原子性写入磁盘（Cookie 不写入 JSON，由 Keychain 管理）
     func save() throws {
+        var copy = self
+        copy.weiboCnCookie = nil
+        copy.weiboComCookie = nil
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let data = try encoder.encode(self)
+        let data = try encoder.encode(copy)
         try data.write(to: Self.settingsURL, options: .atomic)
     }
 }

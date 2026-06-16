@@ -1,10 +1,31 @@
 import Foundation
 import SwiftUI
 
+// MARK: - 下载进度模型
+
+struct DownloadProgress: Sendable {
+    var completed: Int = 0
+    var skipped: Int = 0
+    var failed: Int = 0
+    var currentPage: Int = 0
+
+    var total: Int { completed + skipped + failed }
+
+    var summaryText: String {
+        "完成 \(completed) | 跳过 \(skipped) | 失败 \(failed)"
+    }
+}
+
+/// 下载失败的文件记录
+struct FailedItem: Identifiable, Sendable {
+    let id = UUID()
+    let url: URL
+    let fileName: String
+    let errorDescription: String
+}
+
 // MARK: - 下载主视图模型
 
-/// 下载功能的核心 ViewModel，管理 UI 状态和下载任务生命周期
-/// 使用 @MainActor 确保所有 @Published 属性在主线程更新（替代 C# 的 Dispatcher.InvokeAsync）
 @MainActor
 final class DownloadViewModel: ObservableObject {
     @Published var uid: String = ""
@@ -12,10 +33,48 @@ final class DownloadViewModel: ObservableObject {
     @Published var isDownloading = false
     @Published var userInfo: WeiboUser?
     @Published var showSettings = false
+    @Published var progress = DownloadProgress()
+    @Published var failedItems: [FailedItem] = []
 
     /// 当前下载任务句柄（用于取消操作）
     private var downloadTask: Task<Void, Never>?
     private var settings = AppSettings.load()
+    private var cronScheduler: CronScheduler?
+
+    private var settingsObserver: Any?
+
+    init() {
+        configureCronScheduler()
+        settingsObserver = NotificationCenter.default.addObserver(
+            forName: .settingsDidChange, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.configureCronScheduler()
+            }
+        }
+    }
+
+    /// 根据当前设置启动或停止 Cron 定时任务
+    func configureCronScheduler() {
+        settings = AppSettings.load()
+
+        if let scheduler = cronScheduler {
+            Task { await scheduler.stop() }
+            cronScheduler = nil
+        }
+
+        guard settings.enableCrontab,
+              let expression = settings.crontab, !expression.isEmpty else { return }
+
+        let scheduler = CronScheduler { @MainActor [weak self] in
+            guard let self, !self.isDownloading else { return }
+            self.appendLog("Cron 定时任务触发，开始批量下载", level: .info)
+            self.batchDownload()
+        }
+        cronScheduler = scheduler
+        Task { await scheduler.start(expression: expression) }
+        appendLog("Cron 定时任务已启动: \(expression)", level: .info)
+    }
 
     /// 从 uidList.txt 文件读取批量下载的 UID 列表
     /// 文件格式：每行一个用户，支持 `UID,昵称` 格式，// 开头为注释
@@ -58,6 +117,9 @@ final class DownloadViewModel: ObservableObject {
             return
         }
         isDownloading = true
+        userInfo = nil
+        progress = DownloadProgress()
+        failedItems = []
         settings = AppSettings.load()
 
         downloadTask = Task {
@@ -73,6 +135,11 @@ final class DownloadViewModel: ObservableObject {
                     onUserInfo: { [weak self] user in
                         Task { @MainActor in
                             self?.userInfo = user
+                        }
+                    },
+                    onProgress: { [weak self] event in
+                        Task { @MainActor in
+                            self?.handleProgressEvent(event)
                         }
                     }
                 )
@@ -113,6 +180,8 @@ final class DownloadViewModel: ObservableObject {
         }
 
         isDownloading = true
+        progress = DownloadProgress()
+        failedItems = []
         settings = AppSettings.load()
         appendLog("开始批量下载 \(uids.count) 个用户", level: .info)
 
@@ -131,6 +200,9 @@ final class DownloadViewModel: ObservableObject {
                         },
                         onUserInfo: { [weak self] user in
                             Task { @MainActor in self?.userInfo = user }
+                        },
+                        onProgress: { [weak self] event in
+                            Task { @MainActor in self?.handleProgressEvent(event) }
                         }
                     )
                 } catch is CancellationError {
@@ -162,12 +234,26 @@ final class DownloadViewModel: ObservableObject {
 
     // MARK: - 私有方法
 
-    /// 添加日志消息（新消息插入列表头部，限制最多 500 条防止内存溢出）
+    private func handleProgressEvent(_ event: DownloadCoordinator.DownloadEvent) {
+        switch event {
+        case .completed:
+            progress.completed += 1
+        case .skipped:
+            progress.skipped += 1
+        case .failed(let url, let fileName, let error):
+            progress.failed += 1
+            failedItems.append(FailedItem(url: url, fileName: fileName, errorDescription: error))
+        case .pageLoaded(let page):
+            progress.currentPage = page
+        }
+    }
+
+    /// 添加日志消息（追加到尾部，UI 侧反转显示最新在前），限制最多 500 条
     private func appendLog(_ text: String, level: LogLevel = .info) {
         let msg = LogMessage(text, level: level)
-        messages.insert(msg, at: 0)
+        messages.append(msg)
         if messages.count > 500 {
-            messages.removeLast(messages.count - 500)
+            messages.removeFirst(messages.count - 500)
         }
     }
 
