@@ -1,11 +1,19 @@
 import SwiftUI
+import AppKit
 
 // MARK: - 应用入口
 
-/// 微博相册下载器 macOS 应用入口
-/// 使用 SwiftUI App 生命周期，注册主窗口和菜单栏快捷键
+/// SPM 可执行文件需要显式注册为 GUI 应用，否则从终端启动时不会显示窗口
+class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+}
+
 @main
 struct WeiboAlbumDownloaderApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var downloadVM = DownloadViewModel()
 
     private var windowTitle: String {
