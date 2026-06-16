@@ -52,7 +52,7 @@ enum MediaType: String, Codable {
 }
 
 /// 日志级别，对应 UI 中不同颜色显示
-enum LogLevel: String, Codable {
+enum LogLevel: String, Codable, CaseIterable {
     case info
     case success
     case warning

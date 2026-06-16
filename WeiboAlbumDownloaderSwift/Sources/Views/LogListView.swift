@@ -3,7 +3,7 @@ import SwiftUI
 // MARK: - 日志列表视图
 
 struct LogListView: View {
-    let messages: [LogMessage]
+    let logStore: LogStore
     @Binding var filterLevel: LogLevel?
 
     var body: some View {
@@ -11,10 +11,20 @@ struct LogListView: View {
             logFilterBar
             Divider()
 
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(filteredMessages) { message in
-                        LogRowView(message: message)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(filteredMessages) { message in
+                            LogRowView(message: message)
+                                .id(message.id)
+                        }
+                    }
+                }
+                .onChange(of: logStore.messages.count) {
+                    if let last = filteredMessages.last {
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            proxy.scrollTo(last.id, anchor: .bottom)
+                        }
                     }
                 }
             }
@@ -34,8 +44,8 @@ struct LogListView: View {
     }
 
     private var filteredMessages: [LogMessage] {
-        guard let level = filterLevel else { return messages }
-        return messages.filter { $0.level == level }
+        guard let level = filterLevel else { return logStore.messages }
+        return logStore.messages.filter { $0.level == level }
     }
 
     // MARK: - 过滤栏
@@ -60,12 +70,7 @@ struct LogListView: View {
 
     private func filterButton(level: LogLevel?, label: String, icon: String) -> some View {
         let isActive = filterLevel == level
-        let count: Int
-        if let level {
-            count = messages.filter { $0.level == level }.count
-        } else {
-            count = messages.count
-        }
+        let count = logStore.count(for: level)
 
         return Button {
             filterLevel = level
@@ -88,7 +93,7 @@ struct LogListView: View {
     }
 
     private func copyAllLogs() {
-        let text = messages.map { "[\($0.timeString)] \($0.text)" }.joined(separator: "\n")
+        let text = logStore.messages.map { "[\($0.timeString)] \($0.text)" }.joined(separator: "\n")
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
     }
@@ -99,7 +104,7 @@ struct LogListView: View {
         panel.nameFieldStringValue = "weibo-download-log.txt"
 
         if panel.runModal() == .OK, let url = panel.url {
-            let text = messages.map { "[\($0.timeString)] [\($0.level.rawValue)] \($0.text)" }.joined(separator: "\n")
+            let text = logStore.messages.map { "[\($0.timeString)] [\($0.level.rawValue)] \($0.text)" }.joined(separator: "\n")
             try? text.write(to: url, atomically: true, encoding: .utf8)
         }
     }
