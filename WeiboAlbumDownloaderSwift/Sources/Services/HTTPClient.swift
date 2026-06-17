@@ -85,13 +85,14 @@ final class HTTPClient: Sendable {
     }
 
     /// 下载文件到指定路径，自动重试最多 3 次（指数退避: 2s, 4s, 8s）
-    func downloadFile(_ url: URL, to destination: URL, maxRetries: Int = 3) async throws {
+    /// - Returns: 下载文件的字节数
+    @discardableResult
+    func downloadFile(_ url: URL, to destination: URL, maxRetries: Int = 3) async throws -> Int64 {
         var lastError: Error?
 
         for attempt in 0...maxRetries {
             do {
-                try await performDownload(url, to: destination)
-                return
+                return try await performDownload(url, to: destination)
             } catch let error as HTTPError where error.isRetryable {
                 lastError = error
             } catch let error as URLError {
@@ -109,7 +110,7 @@ final class HTTPClient: Sendable {
         throw lastError ?? HTTPError.invalidResponse
     }
 
-    private func performDownload(_ url: URL, to destination: URL) async throws {
+    private func performDownload(_ url: URL, to destination: URL) async throws -> Int64 {
         let request = URLRequest(url: url)
         let (tempURL, response) = try await downloadSession.download(for: request)
 
@@ -125,6 +126,9 @@ final class HTTPClient: Sendable {
             try FileManager.default.removeItem(at: destination)
         }
         try FileManager.default.moveItem(at: tempURL, to: destination)
+
+        let size = (try? FileManager.default.attributesOfItem(atPath: destination.path)[.size]) as? Int64
+        return size ?? 0
     }
 }
 

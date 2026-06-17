@@ -2,26 +2,31 @@ import Foundation
 
 // MARK: - 下载编排器
 
-/// 统一的下载编排器，协调数据获取和文件下载的完整流程
-/// 核心改进点（相比 C# 版 MainWindow.xaml.cs 的 1420 行代码）：
-/// 1. 通过 WeiboDataProvider 协议消除 4 种数据源的代码重复
-/// 2. 使用 TaskGroup 实现同一条微博内多张图片的并发下载
-/// 3. 使用 actor 保证并发安全，无需手动锁
-/// 4. 通过 Task.isCancelled 实现优雅取消
+/// 统一的下载编排器，协调数据获取和文件下载的完整流程。
+/// - 通过 WeiboDataProvider 协议消除 4 种数据源的代码重复
+/// - 使用 TaskGroup 滑动窗口实现同一条微博内多张图片的并发下载
+/// - 使用 actor 保证并发安全，并在 actor 内维护目录文件缓存以消除逐文件 syscall
+/// - 通过 Task.isCancelled 实现优雅取消，通过 checkpoint 支持断点续传
 actor DownloadCoordinator {
     private let provider: WeiboDataProvider
     private let downloadService: DownloadService
     private let fileService: FileService
     private let settings: AppSettings
 
+    /// 目录已存在文件名缓存：key 为目录 path，避免对每个文件单独调用 fileExists
+    private var dirCache: [String: Set<String>] = [:]
+
     typealias LogHandler = @Sendable (String, LogLevel) -> Void
     typealias UserInfoHandler = @Sendable (WeiboUser) -> Void
-    /// 单文件下载结果回调（completed/skipped/failed），用于 UI 进度统计
+
+    /// 下载过程事件回调，用于 UI 进度统计与断点保存
     enum DownloadEvent: Sendable {
-        case completed(fileName: String)
+        case completed(fileName: String, bytes: Int64)
         case skipped(fileName: String)
         case failed(url: URL, fileName: String, error: String)
         case pageLoaded(page: Int)
+        /// 翻页后的断点：下一页页码与游标
+        case checkpoint(page: Int, sinceId: Int64)
     }
     typealias ProgressHandler = @Sendable (DownloadEvent) -> Void
 
@@ -33,12 +38,13 @@ actor DownloadCoordinator {
     }
 
     /// 下载单个用户的全部媒体内容
-    /// 根据数据源类型自动选择时间流模式或相册模式
+    /// - Parameter resumeFrom: 断点状态，非空时从中断处继续（仅时间流模式）
     func downloadUser(
         uid: String,
         log: LogHandler,
         onUserInfo: UserInfoHandler,
-        onProgress: ProgressHandler? = nil
+        onProgress: ProgressHandler? = nil,
+        resumeFrom: DownloadResumeState? = nil
     ) async throws {
         let cookie = settings.activeCookie ?? ""
         guard !cookie.isEmpty else {
@@ -51,25 +57,33 @@ actor DownloadCoordinator {
             throw DownloadError.invalidUID(uid)
         }
 
-        log("开始下载 \(uid)", .info)
         let progress = onProgress ?? { _ in }
 
         switch settings.dataSource {
         case .weiboCnMobile, .weiboCn:
-            try await downloadTimeline(uid: uid, cookie: cookie, log: log, onUserInfo: onUserInfo, onProgress: progress)
+            if let resume = resumeFrom, resume.uid == uid {
+                log("从断点继续：第 \(resume.page) 页", .info)
+            } else {
+                log("开始下载 \(uid)", .info)
+            }
+            try await downloadTimeline(
+                uid: uid, cookie: cookie, log: log, onUserInfo: onUserInfo, onProgress: progress,
+                startPage: resumeFrom?.page ?? 1, startSinceId: resumeFrom?.sinceId ?? 0
+            )
         case .weiboCom1, .weiboCom2:
+            log("开始下载 \(uid)", .info)
             try await downloadAlbums(uid: uid, cookie: cookie, log: log, onUserInfo: onUserInfo, onProgress: progress)
         }
     }
 
     // MARK: - 时间流模式（WeiboCnMobile / WeiboCn）
 
-    /// 按时间线翻页下载，适用于 m.weibo.cn 和 weibo.cn 数据源
     private func downloadTimeline(
-        uid: String, cookie: String, log: LogHandler, onUserInfo: UserInfoHandler, onProgress: ProgressHandler
+        uid: String, cookie: String, log: LogHandler, onUserInfo: UserInfoHandler,
+        onProgress: ProgressHandler, startPage: Int, startSinceId: Int64
     ) async throws {
-        var page = 1
-        var sinceId: Int64 = 0
+        var page = startPage
+        var sinceId = startSinceId
         var skipCount = 0
         var userDir = fileService.userDirectory(uid: uid, nickname: nil)
         var didSetUserInfo = false
@@ -98,7 +112,7 @@ actor DownloadCoordinator {
                 fileService.createNicknameMarker(in: userDir, nickname: user.screenName)
 
                 if settings.showHeadImage, let avatarURL = user.avatarURL {
-                    let _ = await downloadService.downloadAvatar(url: avatarURL, to: userDir)
+                    _ = await downloadService.downloadAvatar(url: avatarURL, to: userDir)
                 }
                 didSetUserInfo = true
             }
@@ -109,11 +123,10 @@ actor DownloadCoordinator {
                     return
                 }
 
-                if settings.enableDatetimeRange, let startDate = settings.startDateTime {
-                    if post.createdAt < startDate {
-                        log("翻页到截至日期 \(startDate)，停止下载", .info)
-                        return
-                    }
+                if settings.enableDatetimeRange, let startDate = settings.startDateTime,
+                   post.createdAt < startDate {
+                    log("翻页到截至日期 \(startDate)，停止下载", .info)
+                    return
                 }
 
                 guard !post.mediaItems.isEmpty else { continue }
@@ -121,21 +134,7 @@ actor DownloadCoordinator {
                 let results = await downloadMediaConcurrently(
                     items: post.mediaItems, post: post, directory: userDir
                 )
-
-                for r in results {
-                    let name = r.destination.lastPathComponent
-                    if r.skipped {
-                        skipCount += 1
-                        log("文件已存在，跳过: \(name)", .warning)
-                        onProgress(.skipped(fileName: name))
-                    } else if let error = r.error {
-                        log("下载失败: \(r.url) - \(error.localizedDescription)", .error)
-                        onProgress(.failed(url: r.url, fileName: name, error: error.localizedDescription))
-                    } else {
-                        log("已完成: \(name)", .success)
-                        onProgress(.completed(fileName: name))
-                    }
-                }
+                emit(results, log: log, onProgress: onProgress, skipCount: &skipCount)
 
                 if settings.countDownloadedSkipToNextUser > 0,
                    skipCount > settings.countDownloadedSkipToNextUser {
@@ -145,9 +144,9 @@ actor DownloadCoordinator {
             }
 
             page = result.nextPage ?? (page + 1)
+            onProgress(.checkpoint(page: page, sinceId: sinceId))
 
-            // 反爬延迟：5~10 秒随机间隔，模拟人工操作
-            let delay = Int.random(in: 5000...10000)
+            let delay = Int.random(in: settings.antiCrawlDelayRange)
             log("随机等待 \(delay)ms，避免被限流", .info)
             try await Task.sleep(for: .milliseconds(delay))
         }
@@ -155,7 +154,6 @@ actor DownloadCoordinator {
 
     // MARK: - 相册模式（WeiboCom1 / WeiboCom2）
 
-    /// 按相册逐个下载，适用于 photo.weibo.com 和 weibo.com Ajax 数据源
     private func downloadAlbums(
         uid: String, cookie: String, log: LogHandler, onUserInfo: UserInfoHandler, onProgress: ProgressHandler
     ) async throws {
@@ -173,10 +171,9 @@ actor DownloadCoordinator {
         let userDir = fileService.userDirectory(uid: uid, nickname: nil)
         var skipCount = 0
 
-        // 从头像相册中获取头像
         if let avatarAlbum = albumResult.albums.first(where: { $0.caption == "头像相册" }),
            let coverPic = avatarAlbum.coverPic, let url = URL(string: coverPic) {
-            let _ = await downloadService.downloadAvatar(url: url, to: userDir)
+            _ = await downloadService.downloadAvatar(url: url, to: userDir)
         }
 
         for album in albumResult.albums {
@@ -194,7 +191,6 @@ actor DownloadCoordinator {
                     uid: uid, cookie: cookie, album: album, page: page, sinceId: sinceId
                 )
 
-                // 连续 3 次空页面视为相册已遍历完毕
                 if result.posts.isEmpty {
                     consecutiveEmpty += 1
                     if consecutiveEmpty >= 3 {
@@ -214,7 +210,6 @@ actor DownloadCoordinator {
                 for post in result.posts {
                     if Task.isCancelled { break }
 
-                    // 仅"微博配图"相册应用时间范围过滤
                     if settings.enableDatetimeRange, let startDate = settings.startDateTime,
                        album.caption == "微博配图", post.createdAt < startDate {
                         log("翻页到截至日期，停止下载", .info)
@@ -224,21 +219,7 @@ actor DownloadCoordinator {
                     let results = await downloadMediaConcurrently(
                         items: post.mediaItems, post: post, directory: albumDir
                     )
-
-                    for r in results {
-                        let name = r.destination.lastPathComponent
-                        if r.skipped {
-                            skipCount += 1
-                            log("文件已存在，跳过: \(name)", .warning)
-                            onProgress(.skipped(fileName: name))
-                        } else if let error = r.error {
-                            log("下载失败: \(error.localizedDescription)", .error)
-                            onProgress(.failed(url: r.url, fileName: name, error: error.localizedDescription))
-                        } else {
-                            log("已完成: \(name)", .success)
-                            onProgress(.completed(fileName: name))
-                        }
-                    }
+                    emit(results, log: log, onProgress: onProgress, skipCount: &skipCount)
 
                     if settings.countDownloadedSkipToNextUser > 0,
                        skipCount > settings.countDownloadedSkipToNextUser {
@@ -250,17 +231,41 @@ actor DownloadCoordinator {
                 guard result.hasMore else { break }
                 page = result.nextPage ?? (page + 1)
 
-                let delay = Int.random(in: 5000...10000)
+                let delay = Int.random(in: settings.antiCrawlDelayRange)
                 log("随机等待 \(delay)ms", .info)
                 try await Task.sleep(for: .milliseconds(delay))
             }
         }
     }
 
-    // MARK: - 并发下载（改进 C# 版的串行下载）
+    // MARK: - 结果分发
 
-    /// 使用 TaskGroup 并发下载同一条微博的多个媒体文件
-    /// 通过 maxConcurrentDownloads 控制并发上限，避免触发限流
+    /// 将一批下载结果转换为日志与进度事件，并更新目录缓存
+    private func emit(
+        _ results: [DownloadService.DownloadResult],
+        log: LogHandler, onProgress: ProgressHandler, skipCount: inout Int
+    ) {
+        for r in results {
+            let name = r.destination.lastPathComponent
+            if r.skipped {
+                skipCount += 1
+                log("文件已存在，跳过: \(name)", .warning)
+                onProgress(.skipped(fileName: name))
+            } else if let error = r.error {
+                log("下载失败: \(r.url) - \(error.localizedDescription)", .error)
+                onProgress(.failed(url: r.url, fileName: name, error: error.localizedDescription))
+            } else {
+                markDownloaded(name, in: r.destination.deletingLastPathComponent())
+                log("已完成: \(name)", .success)
+                onProgress(.completed(fileName: name, bytes: r.byteCount))
+            }
+        }
+    }
+
+    // MARK: - 并发下载（滑动窗口）
+
+    /// 使用 TaskGroup 滑动窗口并发下载同一条微博的多个媒体文件，
+    /// 并发上限由 maxConcurrentDownloads 控制；已存在文件经目录缓存直接跳过。
     private func downloadMediaConcurrently(
         items: [MediaItem], post: WeiboPost, directory: URL
     ) async -> [DownloadService.DownloadResult] {
@@ -271,40 +276,72 @@ actor DownloadCoordinator {
             case .image:     return true
             }
         }
+        guard !filtered.isEmpty else { return [] }
+
+        let existing = existingNames(in: directory)
+        let shortenName = settings.enableShortenName
+        var results: [DownloadService.DownloadResult] = []
+        var pending: [(url: URL, destination: URL)] = []
+
+        for item in filtered {
+            let name = fileService.cleanFileName(item.fileName(post: post, shortenName: shortenName))
+            let destination = directory.appendingPathComponent(name)
+            if existing.contains(name) {
+                results.append(.skipped(url: item.url, destination: destination))
+            } else {
+                pending.append((item.url, destination))
+            }
+        }
+
+        guard !pending.isEmpty else { return results }
 
         let setTimestamp = settings.dataSource != .weiboCom2
-        let shortenName = settings.enableShortenName
-        let maxConcurrent = settings.maxConcurrentDownloads
+        let date = post.createdAt
+        let maxConcurrent = max(1, settings.maxConcurrentDownloads)
         let svc = downloadService
 
-        return await withTaskGroup(of: DownloadService.DownloadResult.self, returning: [DownloadService.DownloadResult].self) { group in
-            var results: [DownloadService.DownloadResult] = []
+        let downloaded = await withTaskGroup(of: DownloadService.DownloadResult.self) { group in
+            var collected: [DownloadService.DownloadResult] = []
+            var index = 0
             var running = 0
 
-            for item in filtered {
-                if running >= maxConcurrent {
-                    if let result = await group.next() {
-                        results.append(result)
-                        running -= 1
-                    }
-                }
-
+            func addNext() -> Bool {
+                guard index < pending.count else { return false }
+                let job = pending[index]
+                index += 1
                 group.addTask {
                     await svc.downloadMedia(
-                        item: item, post: post, directory: directory,
-                        shortenName: shortenName,
-                        setTimestamp: setTimestamp
+                        url: job.url, destination: job.destination, date: date, setTimestamp: setTimestamp
                     )
                 }
-                running += 1
+                return true
             }
 
-            for await result in group {
-                results.append(result)
-            }
+            for _ in 0..<maxConcurrent where addNext() { running += 1 }
 
-            return results
+            while running > 0, let result = await group.next() {
+                collected.append(result)
+                running -= 1
+                if addNext() { running += 1 }
+            }
+            return collected
         }
+
+        results.append(contentsOf: downloaded)
+        return results
+    }
+
+    // MARK: - 目录缓存
+
+    private func existingNames(in directory: URL) -> Set<String> {
+        if let cached = dirCache[directory.path] { return cached }
+        let names = fileService.existingFileNames(in: directory)
+        dirCache[directory.path] = names
+        return names
+    }
+
+    private func markDownloaded(_ name: String, in directory: URL) {
+        dirCache[directory.path, default: []].insert(name)
     }
 }
 

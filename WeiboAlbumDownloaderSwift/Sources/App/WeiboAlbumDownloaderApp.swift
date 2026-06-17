@@ -3,23 +3,24 @@ import AppKit
 
 // MARK: - 应用入口
 
-class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+        NotificationService.requestAuthorization()
     }
 }
 
 @main
 struct WeiboAlbumDownloaderApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-    @StateObject private var downloadVM = DownloadViewModel()
+    @State private var downloadVM = DownloadViewModel()
 
     private var windowTitle: String {
         if downloadVM.isDownloading {
             let p = downloadVM.progress
             let user = downloadVM.userInfo?.screenName ?? ""
-            return "微博相册下载器 - \(user) 下载中 (\(p.completed + p.skipped + p.failed) 文件)"
+            return "微博相册下载器 - \(user) 下载中 (\(p.total) 文件)"
         }
         return "微博相册下载器"
     }
@@ -27,9 +28,15 @@ struct WeiboAlbumDownloaderApp: App {
     var body: some Scene {
         WindowGroup {
             MainView()
-                .environmentObject(downloadVM)
+                .environment(downloadVM)
                 .frame(minWidth: 720, minHeight: 500)
                 .navigationTitle(windowTitle)
+                .onChange(of: downloadVM.progress.completed) { _, completed in
+                    updateDockBadge(completed: completed, downloading: downloadVM.isDownloading)
+                }
+                .onChange(of: downloadVM.isDownloading) { _, downloading in
+                    updateDockBadge(completed: downloadVM.progress.completed, downloading: downloading)
+                }
         }
         .windowStyle(.titleBar)
         .defaultSize(width: 900, height: 600)
@@ -55,5 +62,9 @@ struct WeiboAlbumDownloaderApp: App {
                 .keyboardShortcut("o", modifiers: [.command, .shift])
             }
         }
+    }
+
+    private func updateDockBadge(completed: Int, downloading: Bool) {
+        NSApp.dockTile.badgeLabel = (downloading && completed > 0) ? "\(completed)" : nil
     }
 }

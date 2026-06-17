@@ -3,7 +3,7 @@ import SwiftUI
 // MARK: - 设置界面
 
 struct SettingsView: View {
-    @StateObject private var viewModel = SettingsViewModel()
+    @State private var viewModel = SettingsViewModel()
     @Environment(\.dismiss) private var dismiss
     @State private var saveError: String?
     @State private var selectedTab = 0
@@ -37,7 +37,7 @@ struct SettingsView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
                         scheduleSection
-                        pushPlusSection
+                        notificationSection
                     }
                     .padding(20)
                 }
@@ -96,8 +96,9 @@ struct SettingsView: View {
     // MARK: - 数据源
 
     private var dataSourceSection: some View {
-        SettingsSection(title: "数据源", icon: "antenna.radiowaves.left.and.right", iconColor: .blue) {
-            Picker("数据源", selection: $viewModel.settings.dataSource) {
+        @Bindable var vm = viewModel
+        return SettingsSection(title: "数据源", icon: "antenna.radiowaves.left.and.right", iconColor: .blue) {
+            Picker("数据源", selection: $vm.settings.dataSource) {
                 ForEach(WeiboDataSource.allCases) { source in
                     Text(source.displayName).tag(source)
                 }
@@ -113,15 +114,16 @@ struct SettingsView: View {
     // MARK: - Cookie
 
     private var cookieSection: some View {
-        SettingsSection(title: "Cookie 配置", icon: "key.fill", iconColor: .orange) {
+        @Bindable var vm = viewModel
+        return SettingsSection(title: "Cookie 配置", icon: "key.fill", iconColor: .orange) {
             cookieRow(
                 domain: "weibo.cn / m.weibo.cn",
                 isConfigured: viewModel.hasCnCookie,
                 status: viewModel.cnCookieStatus,
-                cookieText: $viewModel.cnCookieText,
+                cookieText: $vm.cnCookieValue,
                 onScan: { viewModel.showCnCookieSheet = true }
             )
-            .sheet(isPresented: $viewModel.showCnCookieSheet) {
+            .sheet(isPresented: $vm.showCnCookieSheet) {
                 CookieWebView(
                     dataSource: .weiboCnMobile,
                     onCookieObtained: { cookie in
@@ -138,10 +140,10 @@ struct SettingsView: View {
                 domain: "weibo.com",
                 isConfigured: viewModel.hasComCookie,
                 status: viewModel.comCookieStatus,
-                cookieText: $viewModel.comCookieText,
+                cookieText: $vm.comCookieValue,
                 onScan: { viewModel.showComCookieSheet = true }
             )
-            .sheet(isPresented: $viewModel.showComCookieSheet) {
+            .sheet(isPresented: $vm.showComCookieSheet) {
                 CookieWebView(
                     dataSource: .weiboCom1,
                     onCookieObtained: { cookie in
@@ -230,12 +232,13 @@ struct SettingsView: View {
     // MARK: - 下载选项
 
     private var downloadOptionsSection: some View {
-        SettingsSection(title: "下载选项", icon: "arrow.down.doc.fill", iconColor: .green) {
+        @Bindable var vm = viewModel
+        return SettingsSection(title: "下载选项", icon: "arrow.down.doc.fill", iconColor: .green) {
             VStack(alignment: .leading, spacing: 10) {
-                Toggle("显示头像", isOn: $viewModel.settings.showHeadImage)
-                Toggle("下载视频", isOn: $viewModel.settings.enableDownloadVideo)
-                Toggle("下载 LivePhoto", isOn: $viewModel.settings.enableDownloadLivePhoto)
-                Toggle("短文件名 (仅日期+编号)", isOn: $viewModel.settings.enableShortenName)
+                Toggle("显示头像", isOn: $vm.settings.showHeadImage)
+                Toggle("下载视频", isOn: $vm.settings.enableDownloadVideo)
+                Toggle("下载 LivePhoto", isOn: $vm.settings.enableDownloadLivePhoto)
+                Toggle("短文件名 (仅日期+编号)", isOn: $vm.settings.enableShortenName)
             }
             .font(.system(size: 13))
 
@@ -245,11 +248,11 @@ struct SettingsView: View {
                 Label("智能跳过阈值", systemImage: "forward.fill")
                     .font(.system(size: 13))
                 Spacer()
-                TextField("", value: $viewModel.settings.countDownloadedSkipToNextUser, format: .number)
+                TextField("", value: $vm.settings.countDownloadedSkipToNextUser, format: .number)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 60)
                     .multilineTextAlignment(.center)
-                    .onChange(of: viewModel.settings.countDownloadedSkipToNextUser) { newVal in
+                    .onChange(of: viewModel.settings.countDownloadedSkipToNextUser) { _, newVal in
                         viewModel.settings.countDownloadedSkipToNextUser = max(1, min(999, newVal))
                     }
                 Text("个已存在文件")
@@ -261,7 +264,7 @@ struct SettingsView: View {
                 Label("同时下载数", systemImage: "arrow.triangle.branch")
                     .font(.system(size: 13))
                 Spacer()
-                Picker("", selection: $viewModel.settings.maxConcurrentDownloads) {
+                Picker("", selection: $vm.settings.maxConcurrentDownloads) {
                     Text("1").tag(1)
                     Text("3").tag(3)
                     Text("5").tag(5)
@@ -270,9 +273,25 @@ struct SettingsView: View {
                 .frame(width: 140)
             }
 
+            HStack {
+                Label("反爬延迟 (毫秒)", systemImage: "timer")
+                    .font(.system(size: 13))
+                Spacer()
+                TextField("", value: $vm.settings.antiCrawlMinDelayMs, format: .number)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 64)
+                    .multilineTextAlignment(.center)
+                Text("~")
+                    .foregroundStyle(.secondary)
+                TextField("", value: $vm.settings.antiCrawlMaxDelayMs, format: .number)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 64)
+                    .multilineTextAlignment(.center)
+            }
+
             Divider()
 
-            Toggle("时间范围过滤", isOn: $viewModel.settings.enableDatetimeRange)
+            Toggle("时间范围过滤", isOn: $vm.settings.enableDatetimeRange)
                 .font(.system(size: 13))
 
             if viewModel.settings.enableDatetimeRange {
@@ -293,9 +312,10 @@ struct SettingsView: View {
     // MARK: - UID 列表管理
 
     private var uidListSection: some View {
-        SettingsSection(title: "批量下载列表", icon: "person.2.fill", iconColor: .indigo) {
+        @Bindable var vm = viewModel
+        return SettingsSection(title: "批量下载列表", icon: "person.2.fill", iconColor: .indigo) {
             HStack(spacing: 8) {
-                TextField("输入 UID 或 UID,昵称", text: $viewModel.newUIDText)
+                TextField("输入 UID 或 UID,昵称", text: $vm.newUIDText)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 13))
                     .onSubmit { viewModel.addUID() }
@@ -316,44 +336,40 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                VStack(spacing: 0) {
-                    ForEach(Array(viewModel.uidListEntries.enumerated()), id: \.element.id) { index, entry in
+                Text("拖动可调整下载顺序")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+
+                List {
+                    ForEach(viewModel.uidListEntries) { entry in
                         HStack(spacing: 8) {
-                            Text("\(index + 1)")
-                                .font(.system(size: 10, design: .rounded))
+                            Image(systemName: "line.3.horizontal")
+                                .font(.system(size: 10))
                                 .foregroundStyle(.tertiary)
-                                .frame(width: 20)
 
                             Text(entry.uid)
                                 .font(.system(size: 12, design: .monospaced))
-                                .textSelection(.enabled)
 
                             if let nick = entry.nickname, !nick.isEmpty {
                                 Text(nick)
                                     .font(.system(size: 12))
                                     .foregroundStyle(.secondary)
                             }
-
                             Spacer()
-
-                            Button {
-                                viewModel.uidListEntries.remove(at: index)
-                            } label: {
-                                Image(systemName: "minus.circle.fill")
-                                    .font(.system(size: 12))
-                                    .foregroundStyle(.red.opacity(0.6))
-                            }
-                            .buttonStyle(.plain)
                         }
-                        .padding(.vertical, 4)
-                        .padding(.horizontal, 8)
-
-                        if index < viewModel.uidListEntries.count - 1 {
-                            Divider().padding(.leading, 28)
-                        }
+                        .listRowInsets(EdgeInsets(top: 2, leading: 8, bottom: 2, trailing: 8))
+                        .listRowSeparator(.hidden)
+                    }
+                    .onMove { source, dest in
+                        viewModel.moveUID(from: source, to: dest)
+                    }
+                    .onDelete { offsets in
+                        viewModel.removeUID(at: offsets)
                     }
                 }
-                .padding(.vertical, 4)
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+                .frame(height: min(CGFloat(viewModel.uidListEntries.count) * 28 + 8, 220))
                 .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 6))
             }
         }
@@ -362,8 +378,9 @@ struct SettingsView: View {
     // MARK: - 定时任务
 
     private var scheduleSection: some View {
-        SettingsSection(title: "定时任务", icon: "clock.fill", iconColor: .purple) {
-            Toggle("启用 Crontab 定时任务", isOn: $viewModel.settings.enableCrontab)
+        @Bindable var vm = viewModel
+        return SettingsSection(title: "定时任务", icon: "clock.fill", iconColor: .purple) {
+            Toggle("启用 Crontab 定时任务", isOn: $vm.settings.enableCrontab)
                 .font(.system(size: 13))
 
             if viewModel.settings.enableCrontab {
@@ -389,6 +406,21 @@ struct SettingsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             }
+
+            Divider()
+
+            HStack {
+                Label("批量用户间隔", systemImage: "hourglass")
+                    .font(.system(size: 13))
+                Spacer()
+                TextField("", value: $vm.settings.batchIntervalSeconds, format: .number)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 60)
+                    .multilineTextAlignment(.center)
+                Text("秒")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -407,10 +439,20 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: - PushPlus
+    // MARK: - 通知
 
-    private var pushPlusSection: some View {
-        SettingsSection(title: "PushPlus 微信推送", icon: "bell.fill", iconColor: .red) {
+    private var notificationSection: some View {
+        @Bindable var vm = viewModel
+        return SettingsSection(title: "完成通知", icon: "bell.fill", iconColor: .red) {
+            Toggle("下载完成发送系统通知", isOn: $vm.settings.enableSystemNotification)
+                .font(.system(size: 13))
+
+            Divider()
+
+            Text("PushPlus 微信推送")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.secondary)
+
             TextField("PushPlus Token (留空则不推送)", text: Binding(
                 get: { viewModel.settings.pushPlusToken ?? "" },
                 set: { viewModel.settings.pushPlusToken = $0.isEmpty ? nil : $0 }

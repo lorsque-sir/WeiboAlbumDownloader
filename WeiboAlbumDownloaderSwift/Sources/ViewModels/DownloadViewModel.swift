@@ -111,11 +111,7 @@ final class DownloadViewModel {
         }
 
         let scheduler = CronScheduler { [weak self] in
-            await MainActor.run {
-                guard let self, !self.isDownloading else { return }
-                self.logStore.append("Cron 定时任务触发，开始批量下载", level: .info)
-                self.batchDownload()
-            }
+            await self?.cronTriggered()
         }
         cronScheduler = scheduler
 
@@ -126,6 +122,13 @@ final class DownloadViewModel {
             await scheduler.start(expression: expression)
         }
         logStore.append("Cron 定时任务已启动: \(expression)", level: .info)
+    }
+
+    /// Cron 触发时执行批量下载（在主线程上调用）
+    private func cronTriggered() {
+        guard !isDownloading else { return }
+        logStore.append("Cron 定时任务触发，开始批量下载", level: .info)
+        batchDownload()
     }
 
     // MARK: - UID 列表读取

@@ -19,51 +19,44 @@ struct DownloadService: Sendable {
         /// 文件已存在被跳过
         let skipped: Bool
         let error: Error?
+        /// 下载字节数（用于速度统计），跳过/失败为 0
+        let byteCount: Int64
 
         static func skipped(url: URL, destination: URL) -> DownloadResult {
-            DownloadResult(url: url, destination: destination, skipped: true, error: nil)
+            DownloadResult(url: url, destination: destination, skipped: true, error: nil, byteCount: 0)
         }
 
-        static func success(url: URL, destination: URL) -> DownloadResult {
-            DownloadResult(url: url, destination: destination, skipped: false, error: nil)
+        static func success(url: URL, destination: URL, byteCount: Int64) -> DownloadResult {
+            DownloadResult(url: url, destination: destination, skipped: false, error: nil, byteCount: byteCount)
         }
 
         static func failure(url: URL, destination: URL, error: Error) -> DownloadResult {
-            DownloadResult(url: url, destination: destination, skipped: false, error: error)
+            DownloadResult(url: url, destination: destination, skipped: false, error: error, byteCount: 0)
         }
     }
 
-    /// 下载单个媒体项（图片/视频/LivePhoto）
+    /// 下载单个媒体项到指定目标路径（是否跳过由调用方的目录缓存决定）
     /// - Parameters:
-    ///   - item: 媒体项信息
-    ///   - post: 所属微博（用于生成文件名和设置时间戳）
-    ///   - directory: 目标目录
-    ///   - shortenName: 是否使用短文件名
+    ///   - url: 媒体下载地址
+    ///   - destination: 目标文件完整路径
+    ///   - date: 微博发布时间（用于设置文件时间戳）
     ///   - setTimestamp: 是否将文件时间设置为微博发布时间（WeiboCom2 数据源无发布时间，应为 false）
     func downloadMedia(
-        item: MediaItem,
-        post: WeiboPost,
-        directory: URL,
-        shortenName: Bool,
-        setTimestamp: Bool = true
+        url: URL,
+        destination: URL,
+        date: Date,
+        setTimestamp: Bool
     ) async -> DownloadResult {
-        let fileName = item.fileName(post: post, shortenName: shortenName)
-        let (exists, destination) = fileService.resolveFile(directory: directory, fileName: fileName)
-
-        if exists {
-            return .skipped(url: item.url, destination: destination)
-        }
-
         do {
-            try await httpClient.downloadFile(item.url, to: destination)
+            let bytes = try await httpClient.downloadFile(url, to: destination)
 
             if setTimestamp {
-                try fileService.setFileTimestamp(destination, date: post.createdAt)
+                try? fileService.setFileTimestamp(destination, date: date)
             }
 
-            return .success(url: item.url, destination: destination)
+            return .success(url: url, destination: destination, byteCount: bytes)
         } catch {
-            return .failure(url: item.url, destination: destination, error: error)
+            return .failure(url: url, destination: destination, error: error)
         }
     }
 

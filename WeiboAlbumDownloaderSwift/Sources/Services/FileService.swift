@@ -37,24 +37,10 @@ struct FileService: Sendable {
         truncateFileName(sanitizeFileName(name), maxLength: 200)
     }
 
-    /// 一次性判断文件是否已存在并返回目标路径，避免重复计算文件名
-    func resolveFile(directory: URL, fileName: String) -> (exists: Bool, destination: URL) {
-        let cleaned = cleanFileName(fileName)
-        let target = directory.appendingPathComponent(cleaned)
-        let exists = FileManager.default.fileExists(atPath: target.path)
-        return (exists, exists ? target : uniqueURL(for: target))
-    }
-
-    /// 计算文件最终存储路径（包含清洗文件名、截断、去重）
-    func destinationURL(directory: URL, fileName: String) -> URL {
-        let target = directory.appendingPathComponent(cleanFileName(fileName))
-        return uniqueURL(for: target)
-    }
-
-    /// 检查文件是否已存在（用于增量下载的智能跳过逻辑）
-    func fileExists(directory: URL, fileName: String) -> Bool {
-        let path = directory.appendingPathComponent(cleanFileName(fileName)).path
-        return FileManager.default.fileExists(atPath: path)
+    /// 列出目录下所有文件名，用于建立"已下载"缓存集合，避免逐文件 syscall
+    func existingFileNames(in directory: URL) -> Set<String> {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+        return Set(names)
     }
 
     /// 将文件的创建时间和修改时间设置为微博发布时间
@@ -96,24 +82,5 @@ struct FileService: Sendable {
         let nameOnly = (name as NSString).deletingPathExtension
         let truncated = String(nameOnly.prefix(maxLength))
         return ext.isEmpty ? truncated : "\(truncated).\(ext)"
-    }
-
-    /// 文件名冲突时自动添加序号后缀，如 `photo(1).jpg`、`photo(2).jpg`
-    private func uniqueURL(for url: URL) -> URL {
-        guard FileManager.default.fileExists(atPath: url.path) else { return url }
-
-        let directory = url.deletingLastPathComponent()
-        let ext = url.pathExtension
-        let nameWithoutExt = url.deletingPathExtension().lastPathComponent
-
-        var counter = 1
-        var candidate: URL
-        repeat {
-            let newName = ext.isEmpty ? "\(nameWithoutExt)(\(counter))" : "\(nameWithoutExt)(\(counter)).\(ext)"
-            candidate = directory.appendingPathComponent(newName)
-            counter += 1
-        } while FileManager.default.fileExists(atPath: candidate.path)
-
-        return candidate
     }
 }

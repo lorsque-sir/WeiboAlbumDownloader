@@ -1,17 +1,32 @@
 import Foundation
-import SwiftUI
+import Observation
 
 // MARK: - 设置视图模型
 
 @MainActor
-final class SettingsViewModel: ObservableObject {
-    @Published var settings: AppSettings
-    @Published var showCnCookieSheet = false
-    @Published var showComCookieSheet = false
-    @Published var uidListEntries: [UIDEntry] = []
-    @Published var newUIDText: String = ""
-    @Published var cnCookieStatus: CookieStatus = .unknown
-    @Published var comCookieStatus: CookieStatus = .unknown
+@Observable
+final class SettingsViewModel {
+    var settings: AppSettings
+    var showCnCookieSheet = false
+    var showComCookieSheet = false
+    var uidListEntries: [UIDEntry] = []
+    var newUIDText: String = ""
+    var cnCookieStatus: CookieStatus = .unknown
+    var comCookieStatus: CookieStatus = .unknown
+
+    /// Cookie 当前值缓存为存储属性，使 SwiftUI 能正确观察其变化并同步 Keychain
+    var cnCookieValue: String {
+        didSet {
+            CookieService.saveCnCookie(cnCookieValue)
+            cnCookieStatus = .unknown
+        }
+    }
+    var comCookieValue: String {
+        didSet {
+            CookieService.saveComCookie(comCookieValue)
+            comCookieStatus = .unknown
+        }
+    }
 
     enum CookieStatus: Equatable {
         case unknown, checking, valid, invalid(String)
@@ -24,12 +39,16 @@ final class SettingsViewModel: ObservableObject {
     }
 
     init() {
-        self.settings = AppSettings.load()
+        self.settings = AppSettingsManager.shared.current
+        self.cnCookieValue = CookieService.loadCnCookie() ?? ""
+        self.comCookieValue = CookieService.loadComCookie() ?? ""
         loadUIDList()
     }
 
     func reload() {
-        settings = AppSettings.load()
+        settings = AppSettingsManager.shared.current
+        cnCookieValue = CookieService.loadCnCookie() ?? ""
+        comCookieValue = CookieService.loadComCookie() ?? ""
         loadUIDList()
     }
 
@@ -37,7 +56,7 @@ final class SettingsViewModel: ObservableObject {
         if settings.enableDatetimeRange && settings.startDateTime == nil {
             return
         }
-        try? settings.save()
+        AppSettingsManager.shared.apply(settings)
         saveUIDList()
         NotificationCenter.default.post(name: .settingsDidChange, object: nil)
     }
@@ -45,58 +64,24 @@ final class SettingsViewModel: ObservableObject {
     // MARK: - Cookie 管理
 
     func setCnCookie(_ cookie: String) {
-        CookieService.saveCnCookie(cookie)
-        cnCookieStatus = .unknown
-        objectWillChange.send()
+        cnCookieValue = cookie
     }
 
     func setComCookie(_ cookie: String) {
-        CookieService.saveComCookie(cookie)
-        comCookieStatus = .unknown
-        objectWillChange.send()
+        comCookieValue = cookie
     }
 
-    var hasCnCookie: Bool {
-        !(CookieService.loadCnCookie() ?? "").isEmpty
-    }
-
-    var hasComCookie: Bool {
-        !(CookieService.loadComCookie() ?? "").isEmpty
-    }
-
-    var cnCookieText: String {
-        get { CookieService.loadCnCookie() ?? "" }
-        set {
-            if newValue.isEmpty {
-                CookieService.saveCnCookie("")
-            } else {
-                CookieService.saveCnCookie(newValue)
-            }
-            cnCookieStatus = .unknown
-            objectWillChange.send()
-        }
-    }
-
-    var comCookieText: String {
-        get { CookieService.loadComCookie() ?? "" }
-        set {
-            if newValue.isEmpty {
-                CookieService.saveComCookie("")
-            } else {
-                CookieService.saveComCookie(newValue)
-            }
-            comCookieStatus = .unknown
-            objectWillChange.send()
-        }
-    }
+    var hasCnCookie: Bool { !cnCookieValue.isEmpty }
+    var hasComCookie: Bool { !comCookieValue.isEmpty }
 
     /// 检测 Cookie 是否仍然有效
     func checkCookieValidity() {
         if hasCnCookie {
             cnCookieStatus = .checking
+            let cookie = cnCookieValue
             Task {
                 let valid = await verifyCookie(
-                    cookie: CookieService.loadCnCookie() ?? "",
+                    cookie: cookie,
                     testURL: URL(string: "https://m.weibo.cn/api/config")!
                 )
                 cnCookieStatus = valid ? .valid : .invalid("Cookie 已失效")
@@ -104,9 +89,10 @@ final class SettingsViewModel: ObservableObject {
         }
         if hasComCookie {
             comCookieStatus = .checking
+            let cookie = comCookieValue
             Task {
                 let valid = await verifyCookie(
-                    cookie: CookieService.loadComCookie() ?? "",
+                    cookie: cookie,
                     testURL: URL(string: "https://weibo.com/ajax/setting/getSetting")!
                 )
                 comCookieStatus = valid ? .valid : .invalid("Cookie 已失效")
@@ -133,11 +119,6 @@ final class SettingsViewModel: ObservableObject {
         } catch {
             return false
         }
-    }
-
-    var crontabDescription: String {
-        guard let cron = settings.crontab, !cron.isEmpty else { return "未设置" }
-        return "Cron: \(cron)"
     }
 
     // MARK: - UID 列表管理
@@ -184,6 +165,10 @@ final class SettingsViewModel: ObservableObject {
 
     func removeUID(at offsets: IndexSet) {
         uidListEntries.remove(atOffsets: offsets)
+    }
+
+    func moveUID(from source: IndexSet, to destination: Int) {
+        uidListEntries.move(fromOffsets: source, toOffset: destination)
     }
 
     func saveUIDList() {

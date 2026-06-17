@@ -7,7 +7,8 @@ import KeychainAccess
 /// 替代 C# 版将 Cookie 明文保存在 Settings.json 中的做法，
 /// Keychain 数据经系统级加密，其他应用无法读取
 enum CookieService {
-    private static let keychain = Keychain(service: "com.weiboalbum.downloader")
+    /// 每次按需创建实例，避免静态可变全局状态（Keychain 实例创建成本极低）
+    private static var keychain: Keychain { Keychain(service: "com.weiboalbum.downloader") }
 
     /// 保存 weibo.cn / m.weibo.cn Cookie
     static func saveCnCookie(_ cookie: String) {

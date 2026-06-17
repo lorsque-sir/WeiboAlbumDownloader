@@ -3,12 +3,14 @@ import SwiftUI
 // MARK: - 主界面
 
 struct MainView: View {
-    @EnvironmentObject var viewModel: DownloadViewModel
+    @Environment(DownloadViewModel.self) private var viewModel
     @State private var isHoveringDownload = false
     @State private var showFailedItems = false
+    @State private var showClearConfirm = false
 
     var body: some View {
-        HSplitView {
+        @Bindable var vm = viewModel
+        return HSplitView {
             sidebarPanel
                 .frame(minWidth: 200, idealWidth: 240, maxWidth: 280)
 
@@ -20,18 +22,23 @@ struct MainView: View {
 
                 Divider()
 
+                if !viewModel.isDownloading, let resume = viewModel.resumableState {
+                    resumeBanner(resume)
+                    Divider()
+                }
+
                 if viewModel.isDownloading || viewModel.progress.total > 0 {
                     progressPanel
                         .transition(.move(edge: .top).combined(with: .opacity))
                     Divider()
                 }
 
-                if viewModel.messages.isEmpty && !viewModel.isDownloading {
+                if viewModel.logStore.messages.isEmpty && !viewModel.isDownloading {
                     emptyStateView
                 } else {
                     LogListView(
-                        messages: viewModel.messages.reversed(),
-                        filterLevel: $viewModel.logFilterLevel
+                        logStore: viewModel.logStore,
+                        filterLevel: $vm.logFilterLevel
                     )
                 }
             }
@@ -39,9 +46,13 @@ struct MainView: View {
         }
         .frame(minWidth: 720, minHeight: 500)
         .background(Color(nsColor: .windowBackgroundColor))
-        .sheet(isPresented: $viewModel.showSettings) {
+        .sheet(isPresented: $vm.showSettings) {
             SettingsView()
                 .frame(minWidth: 560, minHeight: 640)
+        }
+        .sheet(isPresented: $vm.showHistory) {
+            HistoryView()
+                .frame(minWidth: 460, minHeight: 520)
         }
         .animation(.easeInOut(duration: 0.25), value: viewModel.isDownloading)
         .animation(.easeInOut(duration: 0.25), value: viewModel.progress.total)
@@ -265,6 +276,14 @@ struct MainView: View {
             .disabled(viewModel.isDownloading)
 
             sidebarButton(
+                title: "下载历史",
+                icon: "clock.arrow.circlepath",
+                color: .secondary
+            ) {
+                viewModel.showHistory = true
+            }
+
+            sidebarButton(
                 title: "打开下载目录",
                 icon: "folder.fill",
                 color: .secondary
@@ -305,13 +324,14 @@ struct MainView: View {
     // MARK: - 控制栏
 
     private var controlBar: some View {
-        HStack(spacing: 10) {
+        @Bindable var vm = viewModel
+        return HStack(spacing: 10) {
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(.tertiary)
                     .font(.system(size: 13))
 
-                TextField("输入微博 UID", text: $viewModel.uid)
+                TextField("输入微博 UID", text: $vm.uid)
                     .textFieldStyle(.plain)
                     .font(.system(size: 14))
                     .onSubmit {
@@ -357,7 +377,7 @@ struct MainView: View {
             .animation(.easeInOut(duration: 0.15), value: isHoveringDownload)
 
             Button {
-                viewModel.clearLog()
+                showClearConfirm = true
             } label: {
                 Image(systemName: "trash")
                     .font(.system(size: 12))
@@ -367,7 +387,48 @@ struct MainView: View {
             .buttonStyle(.plain)
             .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
             .help("清空日志")
+            .disabled(viewModel.logStore.messages.isEmpty)
+            .confirmationDialog("确定清空所有日志？", isPresented: $showClearConfirm, titleVisibility: .visible) {
+                Button("清空日志", role: .destructive) { viewModel.clearLog() }
+                Button("取消", role: .cancel) {}
+            }
         }
+    }
+
+    // MARK: - 断点恢复横幅
+
+    private func resumeBanner(_ resume: DownloadResumeState) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "arrow.clockwise.circle.fill")
+                .foregroundStyle(.orange)
+                .font(.system(size: 16))
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("有未完成的下载")
+                    .font(.system(size: 12, weight: .medium))
+                Text(resume.summary)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            Button("继续") {
+                viewModel.resumeDownload()
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+            .tint(.orange)
+
+            Button("放弃") {
+                viewModel.discardResume()
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(.orange.opacity(0.08))
     }
 
     // MARK: - 进度面板
@@ -391,7 +452,22 @@ struct MainView: View {
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
 
+                if viewModel.isDownloading, !viewModel.speedText.isEmpty {
+                    Label(viewModel.speedText, systemImage: "speedometer")
+                        .font(.caption2)
+                        .foregroundStyle(.blue)
+                }
+
                 Spacer()
+
+                if !viewModel.downloadedSizeText.isEmpty {
+                    Text(viewModel.downloadedSizeText)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(.quaternary.opacity(0.5), in: Capsule())
+                }
 
                 if viewModel.progress.isBatchMode {
                     Text("用户 \(viewModel.progress.batchCurrentIndex)/\(viewModel.progress.batchTotalCount)")
